@@ -1,7 +1,9 @@
 import type { Camera } from "./camera";
 import type { Chunk, ChunkManager } from "./chunk-manager";
 
-const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+export const TERRAIN_NAMES = ["深水", "浅水", "沙地", "草地", "森林", "岩地", "雪地"] as const;
+
+export const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
   [22, 63, 112],   // deep water
   [40, 103, 166],  // water
   [210, 190, 131], // sand
@@ -11,17 +13,19 @@ const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
   [229, 235, 238], // snow
 ];
 
-const SOURCE_TILE_PIXELS = 8;
+export const SOURCE_TILE_PIXELS = 8;
 const MAX_SURFACE_CACHE = 32;
 const WORLD_BACKGROUND = "#000000";
-const BASE_TILE_MASK = [
-  "10101010",
+
+// Default mask from the latest uploaded sprite: a centered 2×2 mark in an 8×8 cell.
+const DEFAULT_TILE_MASK = [
   "00000000",
-  "10101010",
   "00000000",
-  "10101010",
   "00000000",
-  "10101010",
+  "00011000",
+  "00011000",
+  "00000000",
+  "00000000",
   "00000000",
 ] as const;
 
@@ -29,11 +33,13 @@ export class Renderer {
   /** Base art/grid size. World generation remains tile-coordinate based. */
   readonly tilePixels = 32;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
+  private readonly defaultMask: HTMLCanvasElement;
+  private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
-  private readonly terrainSprites: HTMLCanvasElement[];
 
   constructor() {
-    this.terrainSprites = this.createTintedSprites(this.createBaseMask());
+    this.defaultMask = this.createDefaultMask();
+    this.terrainSprites = this.createTintedSprites([this.defaultMask]);
   }
 
   setGridVisible(visible: boolean): void {
@@ -42,6 +48,20 @@ export class Renderer {
 
   isGridVisible(): boolean {
     return this.gridVisible;
+  }
+
+  setTerrainMasks(masks: readonly CanvasImageSource[]): void {
+    this.terrainSprites = this.createTintedSprites(masks.length > 0 ? masks : [this.defaultMask]);
+    this.clear();
+  }
+
+  resetTerrainTextures(): void {
+    this.terrainSprites = this.createTintedSprites([this.defaultMask]);
+    this.clear();
+  }
+
+  getTerrainSprites(): readonly HTMLCanvasElement[] {
+    return this.terrainSprites;
   }
 
   clear(): void {
@@ -90,7 +110,7 @@ export class Renderer {
     this.cleanupSurfaces(chunks);
   }
 
-  private createBaseMask(): HTMLCanvasElement {
+  private createDefaultMask(): HTMLCanvasElement {
     const mask = document.createElement("canvas");
     mask.width = SOURCE_TILE_PIXELS;
     mask.height = SOURCE_TILE_PIXELS;
@@ -100,7 +120,7 @@ export class Renderer {
     context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
     context.fillStyle = "#ffffff";
     for (let y = 0; y < SOURCE_TILE_PIXELS; y += 1) {
-      const row = BASE_TILE_MASK[y];
+      const row = DEFAULT_TILE_MASK[y];
       if (!row) continue;
       for (let x = 0; x < SOURCE_TILE_PIXELS; x += 1) {
         if (row[x] === "1") context.fillRect(x, y, 1, 1);
@@ -109,8 +129,10 @@ export class Renderer {
     return mask;
   }
 
-  private createTintedSprites(mask: CanvasImageSource): HTMLCanvasElement[] {
-    return TERRAIN_COLORS.map((color) => {
+  private createTintedSprites(masks: readonly CanvasImageSource[]): HTMLCanvasElement[] {
+    const firstMask = masks[0] ?? this.defaultMask;
+    return TERRAIN_COLORS.map((color, index) => {
+      const mask = masks[index] ?? firstMask;
       const canvas = document.createElement("canvas");
       canvas.width = SOURCE_TILE_PIXELS;
       canvas.height = SOURCE_TILE_PIXELS;
@@ -118,6 +140,7 @@ export class Renderer {
       if (!context) throw new Error("2D canvas context is unavailable.");
 
       context.imageSmoothingEnabled = false;
+      context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       context.drawImage(mask, 0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       context.globalCompositeOperation = "source-in";
       context.fillStyle = `rgb(${color[0]} ${color[1]} ${color[2]})`;
