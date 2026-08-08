@@ -23,6 +23,9 @@ export const TERRAIN_BASE_COLORS: ReadonlyArray<readonly [number, number, number
 );
 
 export const SOURCE_TILE_PIXELS = 8;
+export const SOURCE_TILE_GAP = 1;
+export const SOURCE_TILE_STRIDE = SOURCE_TILE_PIXELS + SOURCE_TILE_GAP;
+const DISPLAY_SCALE = 4;
 const MAX_SURFACE_CACHE = 32;
 const WORLD_BACKGROUND = "#000000";
 
@@ -39,11 +42,14 @@ const DEFAULT_TILE_MASK = [
 ] as const;
 
 export class Renderer {
-  readonly tilePixels = 32;
+  readonly tileArtPixels = SOURCE_TILE_PIXELS * DISPLAY_SCALE;
+  readonly tileGapPixels = SOURCE_TILE_GAP * DISPLAY_SCALE;
+  readonly tilePixels = SOURCE_TILE_STRIDE * DISPLAY_SCALE;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
   private readonly defaultMasks: HTMLCanvasElement[];
   private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
+  private baseColorVisible = true;
   private waterShaderEnabled = false;
   private textureRevision = 0;
 
@@ -58,6 +64,16 @@ export class Renderer {
 
   isGridVisible(): boolean {
     return this.gridVisible;
+  }
+
+  setBaseColorVisible(visible: boolean): void {
+    if (this.baseColorVisible === visible) return;
+    this.baseColorVisible = visible;
+    this.clear();
+  }
+
+  isBaseColorVisible(): boolean {
+    return this.baseColorVisible;
   }
 
   setWaterShaderEnabled(enabled: boolean): void {
@@ -231,8 +247,8 @@ export class Renderer {
     if (existing) return existing;
 
     const canvas = document.createElement("canvas");
-    canvas.width = chunkSize * SOURCE_TILE_PIXELS;
-    canvas.height = chunkSize * SOURCE_TILE_PIXELS;
+    canvas.width = chunkSize * SOURCE_TILE_STRIDE;
+    canvas.height = chunkSize * SOURCE_TILE_STRIDE;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas context is unavailable.");
     context.imageSmoothingEnabled = false;
@@ -242,11 +258,13 @@ export class Renderer {
     for (let i = 0; i < chunk.tiles.length; i += 1) {
       const terrainId = chunk.tiles[i] ?? 0;
       const baseColor = TERRAIN_BASE_COLORS[terrainId] ?? [24, 24, 24];
-      const tileX = (i % chunkSize) * SOURCE_TILE_PIXELS;
-      const tileY = Math.floor(i / chunkSize) * SOURCE_TILE_PIXELS;
+      const tileX = (i % chunkSize) * SOURCE_TILE_STRIDE;
+      const tileY = Math.floor(i / chunkSize) * SOURCE_TILE_STRIDE;
 
-      context.fillStyle = `rgb(${baseColor[0]} ${baseColor[1]} ${baseColor[2]})`;
-      context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+      if (this.baseColorVisible) {
+        context.fillStyle = `rgb(${baseColor[0]} ${baseColor[1]} ${baseColor[2]})`;
+        context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+      }
 
       const shaderOwnsWaterTexture = this.waterShaderEnabled && (terrainId === 0 || terrainId === 1);
       const sprite = this.terrainSprites[terrainId];
