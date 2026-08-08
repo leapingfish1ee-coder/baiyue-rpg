@@ -111,7 +111,7 @@
                 <input id="texture-color-frequency" type="range" min="0.005" max="0.15" step="0.005" value="0.045" />
                 <output id="texture-color-frequency-value" for="texture-color-frequency">0.045</output>
               </label>
-              <div class="shader-parameter-note">Canvas2D 始终绘制完整静态纹理。WebGL2 只叠加旋转多 octave world-space 明暗效果；初始化或运行失败时自动降级，不影响地图与纹理加载。</div>
+              <div class="shader-parameter-note">GPU 模式下 WebGL2 负责完整动态纹理，水域保留已验收的 b67 视觉合成；其他纹理使用同一 world-space 噪波调制纹理亮度。WebGL2 初始化或运行失败时立即切换为完整 Canvas2D 静态纹理。</div>
             </div>
             <div class="shader-parameter-actions">
               <button id="texture-parameter-reset" type="button">恢复默认参数</button>
