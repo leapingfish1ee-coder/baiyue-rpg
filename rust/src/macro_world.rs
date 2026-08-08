@@ -1,6 +1,5 @@
 use crate::hash::hash_edge;
 use crate::noise::NoiseFields;
-use crate::terrain::Terrain;
 
 pub const MACRO_CELL_TILES: i64 = 64;
 const EDGE_TAG: u64 = 0x4544_4745_434F_4E54; // EDGECONT
@@ -11,7 +10,6 @@ pub struct MacroCell {
     pub y: i64,
     pub elevation: f32,
     pub moisture: f32,
-    pub biome: Terrain,
 }
 
 impl MacroCell {
@@ -22,7 +20,6 @@ impl MacroCell {
             y,
             elevation,
             moisture,
-            biome: Terrain::classify(elevation, moisture),
         }
     }
 }
