@@ -22,7 +22,11 @@ The important invariant is now:
 
 ```text
 1 macro pixel = 1 streamed runtime chunk = 64 × 64 playable tiles
+1 logical tile = 32 × 32 px base art/grid size
+1 MacroCell = 2048 × 2048 px at camera zoom 1.0
 ```
+
+The 32×32 pixel size belongs only to rendering/art assets. Rust/WASM generation, persistence and world addressing continue to use integer tile coordinates, so changing camera zoom or future display resolution does not change generated terrain.
 
 The macro pixel is **not** nearest-neighbor enlarged. It acts as the dominant regional descriptor. Each playable tile is derived from the current macro cell plus its 8 neighbors, then receives low-amplitude local variation sampled in absolute world tile coordinates.
 
@@ -61,7 +65,7 @@ Both sides of an edge derive the same signature regardless of generation order. 
 - FastNoiseLite: deterministic macro fields and local absolute-coordinate detail.
 - Dedicated Web Worker: generation off the UI thread.
 - TypeScript/Vite: camera, streaming, cache and browser lifecycle.
-- Canvas2D: current validation renderer.
+- Canvas2D: current validation renderer using a 32×32 px base tile grid.
 
 No rivers, roads, buildings, collision, navigation, WFC, persistence or player edits are generated yet.
 
@@ -77,7 +81,7 @@ The generator currently tests:
 6. opposite sides derive the same `EdgeContract`;
 7. an `8×8` macro region generates identical checksums regardless of visit order.
 
-`GENERATOR_VERSION` is now `2` because the world-generation contract changed from direct tile noise to hierarchical macro-region generation.
+`GENERATOR_VERSION` is `2` because the world-generation contract changed from direct tile noise to hierarchical macro-region generation. The 32×32 rendering change does not alter this generation contract.
 
 ## Run locally
 

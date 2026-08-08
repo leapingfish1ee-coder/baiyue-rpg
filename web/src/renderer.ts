@@ -12,7 +12,8 @@ const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
 ];
 
 export class Renderer {
-  readonly tilePixels = 16;
+  /** Base art/grid size. World generation remains tile-coordinate based. */
+  readonly tilePixels = 32;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
 
   clear(): void {
