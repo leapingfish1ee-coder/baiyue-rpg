@@ -3,7 +3,9 @@ import { Camera } from "./camera";
 import { ChunkManager } from "./chunk-manager";
 import { Renderer, TERRAIN_NAMES } from "./renderer";
 import { TextureTool } from "./texture-tool";
-import { WaterShaderRenderer } from "./water-shader";
+import { WaterShaderRenderer, type WaterShaderParameters } from "./water-shader";
+
+const WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -17,6 +19,8 @@ const seedInput = requireElement<HTMLInputElement>("#seed");
 const applySeedButton = requireElement<HTMLButtonElement>("#apply-seed");
 const gridToggle = requireElement<HTMLInputElement>("#grid-toggle");
 const waterShaderToggle = requireElement<HTMLInputElement>("#water-shader-toggle");
+const waterParameterFields = requireElement<HTMLFieldSetElement>("#water-parameter-fields");
+const waterParameterReset = requireElement<HTMLButtonElement>("#water-parameter-reset");
 const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
 const chunksElement = requireElement<HTMLElement>("#chunks");
@@ -32,6 +36,120 @@ const renderer = new Renderer();
 const waterShader = new WaterShaderRenderer(waterCanvas);
 renderer.setGridVisible(gridToggle.checked);
 
+type WaterControlDefinition = {
+  key: keyof WaterShaderParameters;
+  input: HTMLInputElement;
+  output: HTMLOutputElement;
+  decimals: number;
+  suffix: string;
+};
+
+const waterControls: WaterControlDefinition[] = [
+  {
+    key: "deepSpeed",
+    input: requireElement<HTMLInputElement>("#water-deep-speed"),
+    output: requireElement<HTMLOutputElement>("#water-deep-speed-value"),
+    decimals: 2,
+    suffix: "×",
+  },
+  {
+    key: "deepColorStrength",
+    input: requireElement<HTMLInputElement>("#water-deep-color"),
+    output: requireElement<HTMLOutputElement>("#water-deep-color-value"),
+    decimals: 2,
+    suffix: "",
+  },
+  {
+    key: "deepDisplacement",
+    input: requireElement<HTMLInputElement>("#water-deep-displacement"),
+    output: requireElement<HTMLOutputElement>("#water-deep-displacement-value"),
+    decimals: 0,
+    suffix: " texel",
+  },
+  {
+    key: "shallowSpeed",
+    input: requireElement<HTMLInputElement>("#water-shallow-speed"),
+    output: requireElement<HTMLOutputElement>("#water-shallow-speed-value"),
+    decimals: 2,
+    suffix: "×",
+  },
+  {
+    key: "shallowColorStrength",
+    input: requireElement<HTMLInputElement>("#water-shallow-color"),
+    output: requireElement<HTMLOutputElement>("#water-shallow-color-value"),
+    decimals: 2,
+    suffix: "",
+  },
+  {
+    key: "shallowDisplacement",
+    input: requireElement<HTMLInputElement>("#water-shallow-displacement"),
+    output: requireElement<HTMLOutputElement>("#water-shallow-displacement-value"),
+    decimals: 0,
+    suffix: " texel",
+  },
+  {
+    key: "displacementFrequency",
+    input: requireElement<HTMLInputElement>("#water-displacement-frequency"),
+    output: requireElement<HTMLOutputElement>("#water-displacement-frequency-value"),
+    decimals: 2,
+    suffix: "",
+  },
+  {
+    key: "colorFrequency",
+    input: requireElement<HTMLInputElement>("#water-color-frequency"),
+    output: requireElement<HTMLOutputElement>("#water-color-frequency-value"),
+    decimals: 3,
+    suffix: "",
+  },
+];
+
+function syncWaterParameterControls(): void {
+  const parameters = waterShader.getParameters();
+  for (const control of waterControls) {
+    const value = parameters[control.key];
+    control.input.value = String(value);
+    control.output.textContent = `${value.toFixed(control.decimals)}${control.suffix}`;
+  }
+}
+
+function persistWaterParameters(): void {
+  try {
+    localStorage.setItem(WATER_SHADER_STORAGE_KEY, JSON.stringify(waterShader.getParameters()));
+  } catch {
+    // Rendering remains functional if local storage is unavailable.
+  }
+}
+
+function restoreWaterParameters(): void {
+  const stored = localStorage.getItem(WATER_SHADER_STORAGE_KEY);
+  if (!stored) return;
+  try {
+    const parsed = JSON.parse(stored) as Partial<WaterShaderParameters>;
+    waterShader.setParameters(parsed);
+  } catch {
+    localStorage.removeItem(WATER_SHADER_STORAGE_KEY);
+  }
+}
+
+restoreWaterParameters();
+syncWaterParameterControls();
+
+for (const control of waterControls) {
+  control.input.addEventListener("input", () => {
+    const value = Number(control.input.value);
+    waterShader.setParameters({ [control.key]: value } as Partial<WaterShaderParameters>);
+    const actual = waterShader.getParameters()[control.key];
+    control.output.textContent = `${actual.toFixed(control.decimals)}${control.suffix}`;
+    persistWaterParameters();
+  });
+}
+
+waterParameterReset.addEventListener("click", () => {
+  waterShader.resetParameters();
+  localStorage.removeItem(WATER_SHADER_STORAGE_KEY);
+  syncWaterParameterControls();
+});
+
 function setWaterShaderEnabled(enabled: boolean): void {
   const active = enabled && waterShader.available;
   waterShaderToggle.checked = active;
@@ -43,6 +161,8 @@ if (!waterShader.available) {
   waterShaderToggle.checked = false;
   waterShaderToggle.disabled = true;
   waterShaderToggle.title = "当前浏览器不支持 WebGL2，已回退到静态水面纹理。";
+  waterParameterFields.disabled = true;
+  waterParameterReset.disabled = true;
 }
 setWaterShaderEnabled(waterShaderToggle.checked);
 

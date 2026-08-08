@@ -7,6 +7,39 @@ import {
   type Renderer,
 } from "./renderer";
 
+export interface WaterShaderParameters {
+  deepSpeed: number;
+  shallowSpeed: number;
+  deepColorStrength: number;
+  shallowColorStrength: number;
+  deepDisplacement: number;
+  shallowDisplacement: number;
+  displacementFrequency: number;
+  colorFrequency: number;
+}
+
+export const DEFAULT_WATER_SHADER_PARAMETERS: Readonly<WaterShaderParameters> = Object.freeze({
+  deepSpeed: 0.18,
+  shallowSpeed: 0.30,
+  deepColorStrength: 0.15,
+  shallowColorStrength: 0.22,
+  deepDisplacement: 1,
+  shallowDisplacement: 1,
+  displacementFrequency: 0.14,
+  colorFrequency: 0.045,
+});
+
+const PARAMETER_LIMITS: Record<keyof WaterShaderParameters, readonly [number, number]> = {
+  deepSpeed: [0.02, 0.8],
+  shallowSpeed: [0.02, 1.0],
+  deepColorStrength: [0, 0.6],
+  shallowColorStrength: [0, 0.6],
+  deepDisplacement: [0, 2],
+  shallowDisplacement: [0, 2],
+  displacementFrequency: [0.03, 0.4],
+  colorFrequency: [0.005, 0.15],
+};
+
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
 
@@ -62,6 +95,14 @@ uniform vec3 u_deepBase;
 uniform vec3 u_shallowBase;
 uniform vec3 u_deepColor;
 uniform vec3 u_shallowColor;
+uniform float u_deepSpeed;
+uniform float u_shallowSpeed;
+uniform float u_deepColorStrength;
+uniform float u_shallowColorStrength;
+uniform float u_deepDisplacement;
+uniform float u_shallowDisplacement;
+uniform float u_displacementFrequency;
+uniform float u_colorFrequency;
 
 out vec4 outColor;
 
@@ -90,16 +131,23 @@ int wrapTexel(int value) {
 
 void main() {
   bool deep = v_terrain == 0;
-  float speed = deep ? 0.18 : 0.30;
-  float colorStrength = deep ? 0.15 : 0.22;
+  float speed = deep ? u_deepSpeed : u_shallowSpeed;
+  float colorStrength = deep ? u_deepColorStrength : u_shallowColorStrength;
+  float displacementStrength = deep ? u_deepDisplacement : u_shallowDisplacement;
 
   vec2 localFloat = clamp(floor(v_uv * float(TILE_SIZE)), vec2(0.0), vec2(7.0));
   ivec2 localTexel = ivec2(localFloat);
   vec2 worldTexel = v_worldTile * float(TILE_SIZE) + localFloat;
 
-  float dxNoise = valueNoise(worldTexel * 0.14 + vec2(u_time * speed * 2.2, 17.0));
-  float dyNoise = valueNoise(worldTexel * 0.11 + vec2(31.0, -u_time * speed * 1.6));
-  ivec2 displacement = ivec2(round((vec2(dxNoise, dyNoise) * 2.0 - 1.0)));
+  float dxNoise = valueNoise(
+    worldTexel * u_displacementFrequency + vec2(u_time * speed * 2.2, 17.0)
+  );
+  float dyNoise = valueNoise(
+    worldTexel * (u_displacementFrequency * 0.79) + vec2(31.0, -u_time * speed * 1.6)
+  );
+  ivec2 displacement = ivec2(
+    round((vec2(dxNoise, dyNoise) * 2.0 - 1.0) * displacementStrength)
+  );
   ivec2 sampleTexel = ivec2(
     wrapTexel(localTexel.x + displacement.x),
     wrapTexel(localTexel.y + displacement.y)
@@ -110,7 +158,7 @@ void main() {
     : texelFetch(u_shallowTexture, sampleTexel, 0);
 
   float colorNoise = valueNoise(
-    worldTexel * 0.045 + vec2(u_time * speed, -u_time * speed * 0.35)
+    worldTexel * u_colorFrequency + vec2(u_time * speed, -u_time * speed * 0.35)
   );
   float brightness = 1.0 + (colorNoise * 2.0 - 1.0) * colorStrength;
 
@@ -139,6 +187,7 @@ export class WaterShaderRenderer {
   private uploadedTextureRevision = -1;
   private cssWidth = 1;
   private cssHeight = 1;
+  private parameters: WaterShaderParameters = { ...DEFAULT_WATER_SHADER_PARAMETERS };
 
   constructor(private readonly canvas: HTMLCanvasElement) {
     const gl = canvas.getContext("webgl2", {
@@ -217,6 +266,27 @@ export class WaterShaderRenderer {
     return this.enabled;
   }
 
+  getParameters(): WaterShaderParameters {
+    return { ...this.parameters };
+  }
+
+  setParameters(next: Partial<WaterShaderParameters>): void {
+    const updated = { ...this.parameters };
+    for (const key of Object.keys(DEFAULT_WATER_SHADER_PARAMETERS) as (keyof WaterShaderParameters)[]) {
+      const value = next[key];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      const [minimum, maximum] = PARAMETER_LIMITS[key];
+      updated[key] = Math.min(maximum, Math.max(minimum, value));
+    }
+    updated.deepDisplacement = Math.round(updated.deepDisplacement);
+    updated.shallowDisplacement = Math.round(updated.shallowDisplacement);
+    this.parameters = updated;
+  }
+
+  resetParameters(): void {
+    this.parameters = { ...DEFAULT_WATER_SHADER_PARAMETERS };
+  }
+
   resize(width: number, height: number, dpr: number): void {
     this.cssWidth = Math.max(1, width);
     this.cssHeight = Math.max(1, height);
@@ -247,6 +317,14 @@ export class WaterShaderRenderer {
     gl.uniform1f(gl.getUniformLocation(program, "u_zoom"), camera.zoom);
     gl.uniform1f(gl.getUniformLocation(program, "u_tilePixels"), renderer.tilePixels);
     gl.uniform1f(gl.getUniformLocation(program, "u_time"), timeSeconds);
+    gl.uniform1f(gl.getUniformLocation(program, "u_deepSpeed"), this.parameters.deepSpeed);
+    gl.uniform1f(gl.getUniformLocation(program, "u_shallowSpeed"), this.parameters.shallowSpeed);
+    gl.uniform1f(gl.getUniformLocation(program, "u_deepColorStrength"), this.parameters.deepColorStrength);
+    gl.uniform1f(gl.getUniformLocation(program, "u_shallowColorStrength"), this.parameters.shallowColorStrength);
+    gl.uniform1f(gl.getUniformLocation(program, "u_deepDisplacement"), this.parameters.deepDisplacement);
+    gl.uniform1f(gl.getUniformLocation(program, "u_shallowDisplacement"), this.parameters.shallowDisplacement);
+    gl.uniform1f(gl.getUniformLocation(program, "u_displacementFrequency"), this.parameters.displacementFrequency);
+    gl.uniform1f(gl.getUniformLocation(program, "u_colorFrequency"), this.parameters.colorFrequency);
 
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);

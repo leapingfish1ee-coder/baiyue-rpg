@@ -32,6 +32,66 @@
           <span id="zoom">100%</span>
         </div>
         <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · G 切换网格 · 深水/浅水使用 WebGL2 动态噪波与整数像素置换</div>
+
+        <details id="water-parameter-panel" class="shader-parameter-panel">
+          <summary>水面参数</summary>
+          <fieldset id="water-parameter-fields">
+            <div class="shader-parameter-group">
+              <strong>深水</strong>
+              <label>
+                <span>速度</span>
+                <input id="water-deep-speed" type="range" min="0.02" max="0.8" step="0.01" value="0.18" />
+                <output id="water-deep-speed-value" for="water-deep-speed">0.18×</output>
+              </label>
+              <label>
+                <span>明暗强度</span>
+                <input id="water-deep-color" type="range" min="0" max="0.6" step="0.01" value="0.15" />
+                <output id="water-deep-color-value" for="water-deep-color">0.15</output>
+              </label>
+              <label>
+                <span>置换</span>
+                <input id="water-deep-displacement" type="range" min="0" max="2" step="1" value="1" />
+                <output id="water-deep-displacement-value" for="water-deep-displacement">1 texel</output>
+              </label>
+            </div>
+
+            <div class="shader-parameter-group">
+              <strong>浅水</strong>
+              <label>
+                <span>速度</span>
+                <input id="water-shallow-speed" type="range" min="0.02" max="1" step="0.01" value="0.30" />
+                <output id="water-shallow-speed-value" for="water-shallow-speed">0.30×</output>
+              </label>
+              <label>
+                <span>明暗强度</span>
+                <input id="water-shallow-color" type="range" min="0" max="0.6" step="0.01" value="0.22" />
+                <output id="water-shallow-color-value" for="water-shallow-color">0.22</output>
+              </label>
+              <label>
+                <span>置换</span>
+                <input id="water-shallow-displacement" type="range" min="0" max="2" step="1" value="1" />
+                <output id="water-shallow-displacement-value" for="water-shallow-displacement">1 texel</output>
+              </label>
+            </div>
+
+            <div class="shader-parameter-group shader-parameter-group-wide">
+              <strong>共享噪波</strong>
+              <label>
+                <span>置换频率</span>
+                <input id="water-displacement-frequency" type="range" min="0.03" max="0.4" step="0.01" value="0.14" />
+                <output id="water-displacement-frequency-value" for="water-displacement-frequency">0.14</output>
+              </label>
+              <label>
+                <span>颜色频率</span>
+                <input id="water-color-frequency" type="range" min="0.005" max="0.15" step="0.005" value="0.045" />
+                <output id="water-color-frequency-value" for="water-color-frequency">0.045</output>
+              </label>
+            </div>
+            <div class="shader-parameter-actions">
+              <button id="water-parameter-reset" type="button">恢复默认参数</button>
+            </div>
+          </fieldset>
+        </details>
       </section>
 
       <aside id="texture-tool" hidden aria-label="Tile 纹理工具">
