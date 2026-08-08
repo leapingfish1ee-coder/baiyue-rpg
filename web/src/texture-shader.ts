@@ -3,7 +3,6 @@ import type { ChunkManager } from "./chunk-manager";
 import {
   BASE_TERRAIN_COUNT,
   SOURCE_TILE_PIXELS,
-  TERRAIN_BASE_COLORS,
   TERRAIN_COLORS,
   TEXTURE_SLOT_NAMES,
   type Renderer,
@@ -20,6 +19,13 @@ export interface TextureShaderParameters {
   decorationColorStrength: number;
   colorFrequency: number;
 }
+
+export type TextureShaderFailureKind = "unavailable" | "initialization" | "context-lost" | "runtime";
+
+export type TextureShaderFailure = {
+  kind: TextureShaderFailureKind;
+  message: string;
+};
 
 export const DEFAULT_TEXTURE_SHADER_PARAMETERS: Readonly<TextureShaderParameters> = Object.freeze({
   deepSpeed: 0.18,
@@ -98,8 +104,6 @@ flat in int v_slot;
 
 uniform float u_time;
 uniform sampler2DArray u_textureAtlas;
-uniform vec3 u_deepBase;
-uniform vec3 u_shallowBase;
 uniform vec3 u_deepColor;
 uniform vec3 u_shallowColor;
 uniform float u_speed[8];
@@ -180,22 +184,30 @@ void main() {
     worldTexel * u_colorFrequency,
     u_time * u_speed[v_slot]
   );
-  float brightness = 1.0 + (colorNoise * 2.0 - 1.0) * u_colorStrength[v_slot];
-  vec3 textureColor = textureSample.rgb * brightness;
+  float signedModulation = (colorNoise * 2.0 - 1.0) * u_colorStrength[v_slot];
+  float magnitude = abs(signedModulation);
+  if (magnitude < 0.002) discard;
 
-  if (!water || u_baseEnabled < 0.5) {
-    outColor = vec4(textureColor, textureAlpha * 0.94);
+  bool brighten = signedModulation >= 0.0;
+
+  if (water) {
+    vec3 waterColor = v_slot == 0 ? u_deepColor : u_shallowColor;
+    vec3 overlayColor = brighten
+      ? mix(waterColor, vec3(1.0), 0.25)
+      : vec3(0.0);
+    float areaAlpha = u_baseEnabled >= 0.5 ? magnitude * 0.42 : 0.0;
+    float textureModAlpha = textureAlpha * magnitude * 0.62;
+    float overlayAlpha = clamp(max(areaAlpha, textureModAlpha), 0.0, 0.28);
+    if (overlayAlpha < 0.001) discard;
+    outColor = vec4(overlayColor, overlayAlpha);
     return;
   }
 
-  bool deep = v_slot == 0;
-  vec3 baseColor = deep ? u_deepBase : u_shallowBase;
-  vec3 fullColor = deep ? u_deepColor : u_shallowColor;
-  vec3 ambientColor = mix(baseColor * 1.05, fullColor * 0.52, colorNoise);
-  vec3 overlayColor = mix(ambientColor, textureColor, textureAlpha);
-  float ambientAlpha = deep ? 0.16 : 0.20;
-  float overlayAlpha = mix(ambientAlpha + colorNoise * 0.07, 0.94, textureAlpha);
-
+  vec3 overlayColor = brighten
+    ? mix(textureSample.rgb, vec3(1.0), 0.35)
+    : vec3(0.0);
+  float overlayAlpha = clamp(textureAlpha * magnitude * 0.55, 0.0, 0.20);
+  if (overlayAlpha < 0.001) discard;
   outColor = vec4(overlayColor, overlayAlpha);
 }
 `;
@@ -216,16 +228,31 @@ export class TextureShaderRenderer {
   private cssWidth = 1;
   private cssHeight = 1;
   private parameters: TextureShaderParameters = { ...DEFAULT_TEXTURE_SHADER_PARAMETERS };
+  private failure: TextureShaderFailure | null = null;
+  private failureHandler: ((failure: TextureShaderFailure) => void) | null = null;
 
   constructor(private readonly canvas: HTMLCanvasElement) {
+    this.canvas.addEventListener("webglcontextlost", (event) => {
+      event.preventDefault();
+      this.fail({
+        kind: "context-lost",
+        message: "WebGL2 图形上下文已丢失；动态纹理已关闭，Canvas2D 静态纹理继续工作。",
+      });
+    });
+
     const gl = canvas.getContext("webgl2", {
       alpha: true,
       antialias: false,
       premultipliedAlpha: false,
+      powerPreference: "default",
     });
     this.gl = gl;
 
     if (!gl) {
+      this.failure = {
+        kind: "unavailable",
+        message: "无法创建 WebGL2 图形上下文；使用完整 Canvas2D 静态纹理。",
+      };
       this.canvas.hidden = true;
       return;
     }
@@ -251,8 +278,6 @@ export class TextureShaderRenderer {
 
       gl.useProgram(this.program);
       gl.uniform1i(gl.getUniformLocation(this.program, "u_textureAtlas"), 0);
-      this.setColorUniform(gl, this.program, "u_deepBase", TERRAIN_BASE_COLORS[0]);
-      this.setColorUniform(gl, this.program, "u_shallowBase", TERRAIN_BASE_COLORS[1]);
       this.setColorUniform(gl, this.program, "u_deepColor", TERRAIN_COLORS[0]);
       this.setColorUniform(gl, this.program, "u_shallowColor", TERRAIN_COLORS[1]);
 
@@ -262,6 +287,10 @@ export class TextureShaderRenderer {
       gl.clearColor(0, 0, 0, 0);
     } catch (error) {
       console.error("Texture shader initialization failed", error);
+      this.failure = {
+        kind: "initialization",
+        message: `WebGL2 动态纹理初始化失败：${this.errorMessage(error)}。已使用完整 Canvas2D 静态纹理。`,
+      };
       this.program = null;
       this.vao = null;
       this.instanceBuffer = null;
@@ -271,7 +300,22 @@ export class TextureShaderRenderer {
   }
 
   get available(): boolean {
-    return Boolean(this.gl && this.program && this.vao && this.instanceBuffer && this.textureAtlas);
+    return Boolean(
+      !this.failure &&
+      this.gl &&
+      this.program &&
+      this.vao &&
+      this.instanceBuffer &&
+      this.textureAtlas,
+    );
+  }
+
+  getFailure(): TextureShaderFailure | null {
+    return this.failure ? { ...this.failure } : null;
+  }
+
+  setFailureHandler(handler: (failure: TextureShaderFailure) => void): void {
+    this.failureHandler = handler;
   }
 
   setEnabled(enabled: boolean): void {
@@ -312,13 +356,47 @@ export class TextureShaderRenderer {
       this.canvas.width = targetWidth;
       this.canvas.height = targetHeight;
     }
-    this.gl?.viewport(0, 0, this.canvas.width, this.canvas.height);
+    if (this.gl && !this.gl.isContextLost()) {
+      this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
   }
 
   draw(timeSeconds: number, camera: Camera, chunks: ChunkManager, renderer: Renderer): void {
+    if (!this.enabled) return;
     const gl = this.gl;
+    if (!gl || !this.available) return;
+    if (gl.isContextLost()) {
+      this.fail({
+        kind: "context-lost",
+        message: "WebGL2 图形上下文已丢失；动态纹理已关闭，Canvas2D 静态纹理继续工作。",
+      });
+      return;
+    }
+
+    try {
+      this.drawUnsafe(timeSeconds, camera, chunks, renderer, gl);
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) {
+        throw new Error(`WebGL error 0x${error.toString(16)}`);
+      }
+    } catch (error) {
+      console.error("Texture shader runtime failure", error);
+      this.fail({
+        kind: "runtime",
+        message: `WebGL2 动态纹理运行失败：${this.errorMessage(error)}。已自动切换到完整 Canvas2D 静态纹理。`,
+      });
+    }
+  }
+
+  private drawUnsafe(
+    timeSeconds: number,
+    camera: Camera,
+    chunks: ChunkManager,
+    renderer: Renderer,
+    gl: WebGL2RenderingContext,
+  ): void {
     const program = this.program;
-    if (!this.enabled || !gl || !program || !this.vao || !this.instanceBuffer || !this.textureAtlas) return;
+    if (!program || !this.vao || !this.instanceBuffer || !this.textureAtlas) return;
 
     gl.clear(gl.COLOR_BUFFER_BIT);
     this.syncTextures(renderer);
@@ -497,8 +575,18 @@ export class TextureShaderRenderer {
     return texture;
   }
 
+  private fail(failure: TextureShaderFailure): void {
+    if (this.failure) return;
+    this.failure = failure;
+    this.enabled = false;
+    this.canvas.hidden = true;
+    this.failureHandler?.({ ...failure });
+  }
+
   private clear(): void {
-    this.gl?.clear(this.gl.COLOR_BUFFER_BIT);
+    if (this.gl && !this.gl.isContextLost()) {
+      this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+    }
   }
 
   private createProgram(gl: WebGL2RenderingContext, vertexSource: string, fragmentSource: string): WebGLProgram {
@@ -525,7 +613,7 @@ export class TextureShaderRenderer {
     gl.shaderSource(shader, source);
     gl.compileShader(shader);
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-      const message = gl.getShaderInfoLog(shader) ?? "Unknown WebGL2 shader compile error.";
+      const message = gl.getShaderInfoLog(shader) ?? "Unknown WebGL2 shader compilation error.";
       gl.deleteShader(shader);
       throw new Error(message);
     }
@@ -538,12 +626,11 @@ export class TextureShaderRenderer {
     name: string,
     color: readonly [number, number, number] | undefined,
   ): void {
-    if (!color) return;
-    gl.uniform3f(
-      gl.getUniformLocation(program, name),
-      color[0] / 255,
-      color[1] / 255,
-      color[2] / 255,
-    );
+    const [red, green, blue] = color ?? [255, 255, 255];
+    gl.uniform3f(gl.getUniformLocation(program, name), red / 255, green / 255, blue / 255);
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
   }
 }
