@@ -179,7 +179,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-
   position: absolute;
   top: 14px;
   right: 14px;
-  width: min(360px, calc(100vw - 28px));
+  width: min(430px, calc(100vw - 28px));
   padding: 12px;
   user-select: none;
 }
@@ -219,33 +219,58 @@ button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-
 }
 .texture-preview {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
   margin-top: 12px;
+}
+.texture-preview-heading {
+  grid-column: 1 / -1;
+  padding-top: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: rgba(232,237,242,.56);
+}
+.texture-preview-heading:not(:first-child) {
+  margin-top: 3px;
+  padding-top: 9px;
+  border-top: 1px solid rgba(255,255,255,.08);
 }
 .texture-preview-item {
   min-width: 0;
-  padding: 7px;
+  padding: 5px 3px;
   border: 1px solid rgba(255,255,255,.1);
   border-radius: 7px;
   background: rgba(255,255,255,.035);
   text-align: center;
 }
+.texture-preview-item.is-reserved {
+  border-style: dashed;
+  opacity: .45;
+}
 .texture-preview-item span {
   display: block;
-  margin-top: 5px;
+  margin-top: 4px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
+  font-size: 9px;
   color: rgba(232,237,242,.66);
 }
-.texture-preview-canvas {
-  width: 40px;
-  height: 40px;
+.texture-preview-canvas,
+.texture-preview-reserved-marker {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto;
   image-rendering: pixelated;
   background: #000;
   border: 1px solid rgba(255,255,255,.12);
+}
+.texture-preview-reserved-marker {
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  color: rgba(232,237,242,.4);
 }
 .texture-tool-actions {
   display: flex;
@@ -278,4 +303,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-
     max-height: calc(100vh - 170px);
     overflow: auto;
   }
+  .texture-preview { gap: 4px; }
+  .texture-preview-canvas,
+  .texture-preview-reserved-marker { width: 30px; height: 30px; }
 }
