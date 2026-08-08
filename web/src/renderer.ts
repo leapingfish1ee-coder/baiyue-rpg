@@ -85,6 +85,7 @@ export class Renderer {
   private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
   private baseColorVisible = true;
+  private shaderOwnsTextures = false;
   private textureRevision = 0;
 
   constructor() {
@@ -108,6 +109,16 @@ export class Renderer {
 
   isBaseColorVisible(): boolean {
     return this.baseColorVisible;
+  }
+
+  setTextureShaderActive(active: boolean): void {
+    if (this.shaderOwnsTextures === active) return;
+    this.shaderOwnsTextures = active;
+    this.clear();
+  }
+
+  isTextureShaderActive(): boolean {
+    return this.shaderOwnsTextures;
   }
 
   setTerrainMasks(masks: readonly CanvasImageSource[]): void {
@@ -300,15 +311,15 @@ export class Renderer {
         context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       }
 
-      // Canvas2D is the authoritative rendering baseline. Optional GPU effects
-      // may enhance these pixels, but must never replace or suppress them.
-      const baseSprite = this.terrainSprites[baseTerrainId];
-      if (baseSprite) context.drawImage(baseSprite, tileX, tileY);
+      if (!this.shaderOwnsTextures) {
+        const baseSprite = this.terrainSprites[baseTerrainId];
+        if (baseSprite) context.drawImage(baseSprite, tileX, tileY);
 
-      if (decorationId > 0) {
-        const decorationSpriteIndex = BASE_TERRAIN_COUNT + decorationId - 1;
-        const decorationSprite = this.terrainSprites[decorationSpriteIndex];
-        if (decorationSprite) context.drawImage(decorationSprite, tileX, tileY);
+        if (decorationId > 0) {
+          const decorationSpriteIndex = BASE_TERRAIN_COUNT + decorationId - 1;
+          const decorationSprite = this.terrainSprites[decorationSpriteIndex];
+          if (decorationSprite) context.drawImage(decorationSprite, tileX, tileY);
+        }
       }
     }
 
