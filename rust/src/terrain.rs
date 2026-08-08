@@ -16,7 +16,7 @@ pub enum Terrain {
 }
 
 impl Terrain {
-    pub fn classify(elevation: f64, moisture: f64) -> Self {
+    pub fn classify(elevation: f32, moisture: f32) -> Self {
         if elevation < -0.25 {
             Self::DeepWater
         } else if elevation < -0.10 {

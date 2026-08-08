@@ -58,7 +58,7 @@ impl NoiseFields {
     }
 
     /// Returns (elevation, moisture), each approximately in [-1, 1].
-    pub fn sample(&self, world_x: i64, world_y: i64) -> (f64, f64) {
+    pub fn sample(&self, world_x: i64, world_y: i64) -> (f32, f32) {
         let x = world_x as f64;
         let y = world_y as f64;
         let (warped_x, warped_y) = self.warp.domain_warp_2d(x, y);
