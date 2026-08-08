@@ -82,22 +82,24 @@ bytes 4096..8191    Decoration
 
 The Worker transfers the single owned ArrayBuffer. `ChunkManager` creates two `Uint8Array` views over the same buffer without another payload copy.
 
-## Texture slots
+## Terrain Sheet v3
 
-The browser texture tool now reads eight 8×8 slots from left to right, top to bottom:
+The texture tool accepts one strict `48×16` PNG composed of `8×8` cells in a `6×2` layout:
 
 ```text
-0 DeepWater
-1 Water
-2 Sand
-3 Land
-4 Rock
-5 Snow
-6 Grass decoration
-7 Grove decoration
+Row 0: DeepWater | Water | Sand | Land | Rock | Snow
+Row 1: Grass     | Grove | reserved | reserved | reserved | reserved
 ```
 
-Slots may be empty. Base terrain draws its dark base color and optional texture; Grass/Grove are separate overlays on top of Land. The HUD base-color toggle can hide the base-color layer independently.
+The first six cells are BaseTerrain textures. Grass and Grove are Decoration textures. The remaining four cells are reserved for future decoration types. Texture cells may be transparent/empty and are interpreted as masks before being tinted by the runtime palette.
+
+## Texture shader
+
+When the WebGL2 texture shader is enabled, Canvas2D keeps responsibility for the black world background and optional dark BaseTerrain colors, while WebGL2 renders all eight active texture slots. The same validated three-octave rotated world-space value-noise function modulates texture brightness for DeepWater, Water, Sand, Land, Rock, Snow, Grass and Grove. Texture displacement is not used.
+
+DeepWater and Water retain their stronger water profiles and ambient color overlay. Other BaseTerrain textures use a deliberately restrained shared profile with terrain-specific multipliers; Grass and Grove use a separate decoration profile. Base textures and decoration textures are issued as separate instanced draw passes so Decoration remains above Land. Uploaded Terrain Sheet textures are re-uploaded into one WebGL2 `TEXTURE_2D_ARRAY` whenever the texture revision changes.
+
+If WebGL2 is unavailable or the shader fails to initialize, the renderer falls back to the existing static Canvas2D texture path.
 
 ## Edge contract
 
@@ -110,8 +112,8 @@ Slots may be empty. Base terrain draws its dark base color and optional texture;
 - SplitMix64 coordinate hashes: sparse Grass/Grove placement independent of visit order.
 - Dedicated Web Worker: generation off the UI thread.
 - TypeScript/Vite: camera, streaming, cache and browser lifecycle.
-- Canvas2D: base terrain and decoration rendering.
-- WebGL2 overlay: animated DeepWater/Water color noise.
+- Canvas2D: world background, base colors, grid and static texture fallback.
+- WebGL2 overlay: animated color-noise shading for all BaseTerrain and Decoration texture slots.
 
 No rivers, roads, buildings, collision, navigation, persistence or player edits are generated yet.
 
