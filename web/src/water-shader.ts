@@ -130,11 +130,11 @@ void main() {
 
 export class WaterShaderRenderer {
   private readonly gl: WebGL2RenderingContext | null;
-  private readonly program: WebGLProgram | null;
-  private readonly vao: WebGLVertexArrayObject | null;
-  private readonly instanceBuffer: WebGLBuffer | null;
-  private readonly deepTexture: WebGLTexture | null;
-  private readonly shallowTexture: WebGLTexture | null;
+  private program: WebGLProgram | null = null;
+  private vao: WebGLVertexArrayObject | null = null;
+  private instanceBuffer: WebGLBuffer | null = null;
+  private deepTexture: WebGLTexture | null = null;
+  private shallowTexture: WebGLTexture | null = null;
   private enabled = false;
   private uploadedTextureRevision = -1;
   private cssWidth = 1;
@@ -149,11 +149,6 @@ export class WaterShaderRenderer {
     this.gl = gl;
 
     if (!gl) {
-      this.program = null;
-      this.vao = null;
-      this.instanceBuffer = null;
-      this.deepTexture = null;
-      this.shallowTexture = null;
       this.canvas.hidden = true;
       return;
     }
@@ -192,6 +187,11 @@ export class WaterShaderRenderer {
       gl.clearColor(0, 0, 0, 0);
     } catch (error) {
       console.error("Water shader initialization failed", error);
+      this.program = null;
+      this.vao = null;
+      this.instanceBuffer = null;
+      this.deepTexture = null;
+      this.shallowTexture = null;
       this.canvas.hidden = true;
     }
   }
