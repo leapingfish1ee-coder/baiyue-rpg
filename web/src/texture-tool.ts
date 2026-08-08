@@ -24,7 +24,7 @@ export class TextureTool {
     this.buildPreviewSlots();
     this.renderPreviews();
 
-    elements.toggleButton.addEventListener("click", () => this.setOpen(elements.panel.hidden));
+    elements.toggleButton.addEventListener("click", () => this.setOpen(Boolean(elements.panel.hidden)));
     elements.closeButton.addEventListener("click", () => this.setOpen(false));
     elements.fileInput.addEventListener("change", () => {
       const file = elements.fileInput.files?.[0];
