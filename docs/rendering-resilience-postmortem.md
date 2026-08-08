@@ -4,90 +4,110 @@ Date: 2026-08-08
 
 ## Summary
 
-The initial WebGL2 texture-shader integration treated the GPU layer as the owner of active texture rendering. When the shader was enabled, Canvas2D stopped drawing static terrain and decoration textures.
+The first WebGL2 integration had a real availability risk: when the GPU layer owned active textures, a runtime context loss could leave the world without those textures. The first corrective pass removed that risk by keeping complete static Canvas2D textures permanently underneath WebGL2.
 
-Initial WebGL2 creation and shader-compilation failures did have a fallback path, but the architecture was still unsafe for production because a WebGL2 context can fail after initialization. A runtime context loss, GPU-process reset, driver failure, or later WebGL error could therefore remove the texture layer from an otherwise healthy world.
+That correction overreached. To avoid double-rendering, the validated water shader was rewritten from a complete water composition into a low-alpha light/dark modulation overlay. The application became more fault-tolerant, but the already-approved water appearance changed substantially.
 
-This was a progressive-enhancement violation: an optional visual effect was allowed to become a dependency of the baseline renderer.
+The final correction separates two requirements that must both hold:
 
-## User impact
+1. a complete Canvas2D fallback must be independently renderable from current in-memory world and texture data at any time;
+2. the normal WebGL2 path must be allowed to own dynamic texture pixels so that its approved visual composition is not forced into a translucent overlay model.
 
-Potential failure modes included:
+A fallback does not have to be simultaneously composited underneath the enhanced result. It has to be immediately switchable and independent of GPU state.
 
-- WebGL2 unavailable at startup: static fallback worked, but the UI incorrectly reduced several possible causes to “browser does not support WebGL2”.
-- GLSL/program/resource initialization failure: static fallback worked, but diagnostics were too coarse.
-- WebGL2 context loss after successful startup: Canvas2D had already suppressed static textures, so textures could disappear.
-- Runtime WebGL errors after successful startup: there was no health boundary that disabled the enhancement and returned to a known-good visual state.
-- CI validated Rust, WASM, TypeScript and Vite, but did not launch a browser or exercise WebGL/fallback behavior.
+## Root causes
 
-## Root cause
+### Availability defect
 
-The design confused two responsibilities:
+The original GPU path could fail after successful startup. Startup fallback alone was insufficient because `webglcontextlost`, GPU process reset, driver failure, or later WebGL errors can happen after the Canvas renderer has already suppressed static textures.
 
-1. **Baseline rendering availability** — must work on every supported browser/device that can run the application.
-2. **GPU visual enhancement** — may improve appearance when available but must be disposable at any frame.
+### Visual-regression defect
 
-The renderer contained a `textureShaderEnabled` switch that explicitly stopped Canvas2D from drawing base/decorative texture sprites. That created a hidden coupling between WebGL health and basic texture visibility.
+The first resilience fix confused “fallback must always be available” with “the complete fallback pixels must always be visible underneath the GPU layer”. That forced a different compositing architecture and changed the approved water shader.
+
+The validated baseline was commit `b67e8bad260b3816447e067fcedd2524da0c46f3`, whose water result is defined by:
+
+- rotated three-octave world-space value noise;
+- quintic interpolation;
+- no texture displacement;
+- texture RGB multiplied by dynamic brightness;
+- dynamic ambient water color;
+- texture alpha mixing ambient and texture colors;
+- the original deep/shallow ambient-alpha and final-alpha formulas.
+
+Those formulas are now treated as a visual contract rather than an implementation detail.
 
 ## Corrective architecture
 
-The renderer now follows these invariants:
+The renderer now has two explicit modes.
 
-1. Canvas2D always draws the complete static world: background, optional base colors, all base-terrain textures, all decoration textures, and grid.
-2. WebGL2 never suppresses or replaces Canvas2D pixels.
-3. The GPU shader outputs only a translucent light/dark modulation overlay using the validated world-space rotated multi-octave noise.
-4. If WebGL2 is unavailable, fails to initialize, loses its context, or reports a runtime error, only the overlay is disabled.
-5. The world and its static textures remain visible without rebuilding chunks or reloading the page.
-6. Failure diagnostics distinguish unavailable context, initialization failure, context loss, and runtime error.
-7. The HUD exposes the actual rendering mode: Canvas2D baseline or Canvas2D + WebGL2 enhancement.
+### Enhanced mode
+
+```text
+World data
+   ↓
+Canvas2D: background + optional terrain base colors + grid
+   ↓
+WebGL2: complete dynamic base/decorative texture rendering
+```
+
+For deep and shallow water, WebGL2 uses the approved `b67e8bad...` water composition. For the other six texture slots, WebGL2 uses the same validated world-space noise field to modulate the actual texture RGB and alpha; it does not place a second translucent copy over a static texture.
+
+### Canvas fallback mode
+
+```text
+World data + in-memory texture sprites
+   ↓
+Canvas2D: background + optional base colors + all base textures + all decorations + grid
+```
+
+Switching modes clears the Canvas surface cache. The next frame reconstructs the complete static surfaces from already-loaded chunk and sprite data. No world regeneration, page reload, WebGL resource, or network request is required.
+
+The maximum expected visual interruption at runtime failure is therefore one animation frame rather than loss of world availability.
 
 ## Runtime failure boundary
 
-`TextureShaderRenderer` owns its failure state. It listens for `webglcontextlost`, checks `gl.isContextLost()`, checks WebGL errors after draws, and converts any failure into a one-way session fallback.
+`TextureShaderRenderer` still owns GPU failure detection. It handles:
 
-The main application responds by:
+- WebGL2 context creation failure;
+- GLSL compilation/program link/resource initialization failure;
+- `webglcontextlost`;
+- `gl.isContextLost()`;
+- runtime WebGL errors after drawing.
 
-- disabling the GPU enhancement toggle;
-- disabling shader parameter controls;
-- hiding the WebGL overlay canvas;
-- leaving Canvas2D untouched;
-- showing `Canvas2D（GPU 增强已降级）` in the HUD.
+On a failure the application:
 
-The user can continue using the world normally.
+1. disables and hides the WebGL texture canvas;
+2. switches `Renderer` back to complete Canvas2D texture ownership;
+3. clears cached base-only Canvas surfaces;
+4. disables GPU controls for the session;
+5. reports the actual fallback state in the HUD.
 
-## CI correction
+## CI gates
 
-Pages deployment is now gated by Playwright/Chromium smoke tests in addition to Rust/WASM/TypeScript/Vite checks.
+Pages deployment is gated by Rust/WASM/TypeScript/Vite checks and real Chromium/Playwright tests.
 
 The browser tests cover:
 
-1. forced WebGL2 unavailability by intercepting `canvas.getContext("webgl2")` and returning `null`; the world must still load and the Canvas2D canvas must contain non-black rendered pixels;
-2. normal startup followed, when supported by the CI browser, by `WEBGL_lose_context`; the application must switch to fallback mode while the Canvas2D world remains rendered.
+1. forced WebGL2 unavailability: the application must still load a non-black Canvas2D world;
+2. normal SwiftShader WebGL2 startup: the application must enter `enhanced` mode, so shader compile/link/resource failures cannot silently pass as fallback;
+3. forced `WEBGL_lose_context`: the application must switch to Canvas fallback without losing the world;
+4. the approved water-composition GLSL block and baseline commit identifier are pinned as a source-level visual contract.
 
-A `?shader=off` mode is also available for deterministic manual/automation fallback checks.
+`?shader=off` forces the complete Canvas2D path. `?shaderTime=<seconds>` freezes GPU animation time for deterministic visual diagnostics and future screenshot-golden tests.
 
-## Production rule
+## Production rules
 
-Optional rendering accelerators/effects must never own world availability.
+Optional GPU rendering must never own *world availability*, but it may own *enhanced visual pixels* when a complete CPU fallback can be reconstructed immediately from independent data.
 
-Future WebGPU, post-processing, lighting, particles, weather shaders, or other GPU effects must follow the same dependency direction:
-
-```text
-World data
-   ↓
-Complete Canvas2D baseline
-   ↓
-Optional GPU enhancement
-```
-
-Never:
+Do not change an accepted visual algorithm merely to satisfy fault tolerance. Preserve both contracts separately:
 
 ```text
-World data
-   ↓
-GPU-only visual ownership
-   ↓
-Fallback attempted after failure
+Availability contract:
+current world data → complete non-GPU fallback at any time
+
+Visual contract:
+approved enhanced algorithm → unchanged output unless an explicit visual change is reviewed
 ```
 
-The fallback must already be present underneath the enhancement before the enhancement is allowed to run.
+Build/runtime tests and visual-regression tests are different classes of protection. Passing one must never be described as proving the other.
