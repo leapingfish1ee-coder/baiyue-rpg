@@ -9,7 +9,7 @@
   <body>
     <main id="app">
       <canvas id="world" aria-label="Infinite generated terrain"></canvas>
-      <canvas id="water-effects" hidden aria-hidden="true"></canvas>
+      <canvas id="texture-effects" hidden aria-hidden="true"></canvas>
       <section id="hud">
         <div class="row">
           <label for="seed">Seed</label>
@@ -23,9 +23,9 @@
             <input id="base-color-toggle" type="checkbox" checked />
             <span>底色</span>
           </label>
-          <label class="hud-toggle" for="water-shader-toggle">
-            <input id="water-shader-toggle" type="checkbox" checked />
-            <span>水面 Shader</span>
+          <label class="hud-toggle" for="texture-shader-toggle">
+            <input id="texture-shader-toggle" type="checkbox" checked />
+            <span>纹理 Shader</span>
           </label>
           <button id="texture-tool-toggle" type="button" aria-expanded="false" aria-controls="texture-tool">纹理工具</button>
         </div>
@@ -44,20 +44,20 @@
         </div>
         <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · 1–4 快捷缩放 · G 切换网格 · 32px tile + 4px 间距</div>
 
-        <details id="water-parameter-panel" class="shader-parameter-panel">
-          <summary>水面参数</summary>
-          <fieldset id="water-parameter-fields">
+        <details id="texture-parameter-panel" class="shader-parameter-panel">
+          <summary>纹理 Shader 参数</summary>
+          <fieldset id="texture-parameter-fields">
             <div class="shader-parameter-group">
               <strong>深水</strong>
               <label>
                 <span>速度</span>
-                <input id="water-deep-speed" type="range" min="0.02" max="0.8" step="0.01" value="0.18" />
-                <output id="water-deep-speed-value" for="water-deep-speed">0.18×</output>
+                <input id="texture-deep-speed" type="range" min="0.02" max="0.8" step="0.01" value="0.18" />
+                <output id="texture-deep-speed-value" for="texture-deep-speed">0.18×</output>
               </label>
               <label>
                 <span>明暗强度</span>
-                <input id="water-deep-color" type="range" min="0" max="0.6" step="0.01" value="0.15" />
-                <output id="water-deep-color-value" for="water-deep-color">0.15</output>
+                <input id="texture-deep-color" type="range" min="0" max="0.6" step="0.01" value="0.15" />
+                <output id="texture-deep-color-value" for="texture-deep-color">0.15</output>
               </label>
             </div>
 
@@ -65,13 +65,41 @@
               <strong>浅水</strong>
               <label>
                 <span>速度</span>
-                <input id="water-shallow-speed" type="range" min="0.02" max="1" step="0.01" value="0.30" />
-                <output id="water-shallow-speed-value" for="water-shallow-speed">0.30×</output>
+                <input id="texture-shallow-speed" type="range" min="0.02" max="1" step="0.01" value="0.30" />
+                <output id="texture-shallow-speed-value" for="texture-shallow-speed">0.30×</output>
               </label>
               <label>
                 <span>明暗强度</span>
-                <input id="water-shallow-color" type="range" min="0" max="0.6" step="0.01" value="0.22" />
-                <output id="water-shallow-color-value" for="water-shallow-color">0.22</output>
+                <input id="texture-shallow-color" type="range" min="0" max="0.6" step="0.01" value="0.22" />
+                <output id="texture-shallow-color-value" for="texture-shallow-color">0.22</output>
+              </label>
+            </div>
+
+            <div class="shader-parameter-group">
+              <strong>其他基础地形</strong>
+              <label>
+                <span>速度</span>
+                <input id="texture-surface-speed" type="range" min="0.01" max="0.5" step="0.01" value="0.08" />
+                <output id="texture-surface-speed-value" for="texture-surface-speed">0.08×</output>
+              </label>
+              <label>
+                <span>明暗强度</span>
+                <input id="texture-surface-color" type="range" min="0" max="0.35" step="0.01" value="0.08" />
+                <output id="texture-surface-color-value" for="texture-surface-color">0.08</output>
+              </label>
+            </div>
+
+            <div class="shader-parameter-group">
+              <strong>修饰纹理</strong>
+              <label>
+                <span>速度</span>
+                <input id="texture-decoration-speed" type="range" min="0.01" max="0.6" step="0.01" value="0.10" />
+                <output id="texture-decoration-speed-value" for="texture-decoration-speed">0.10×</output>
+              </label>
+              <label>
+                <span>明暗强度</span>
+                <input id="texture-decoration-color" type="range" min="0" max="0.4" step="0.01" value="0.10" />
+                <output id="texture-decoration-color-value" for="texture-decoration-color">0.10</output>
               </label>
             </div>
 
@@ -79,12 +107,13 @@
               <strong>共享噪波</strong>
               <label>
                 <span>颜色频率</span>
-                <input id="water-color-frequency" type="range" min="0.005" max="0.15" step="0.005" value="0.045" />
-                <output id="water-color-frequency-value" for="water-color-frequency">0.045</output>
+                <input id="texture-color-frequency" type="range" min="0.005" max="0.15" step="0.005" value="0.045" />
+                <output id="texture-color-frequency-value" for="texture-color-frequency">0.045</output>
               </label>
+              <div class="shader-parameter-note">全部 8 个纹理槽使用同一套旋转多 octave world-space 颜色噪波；不包含纹理置换。</div>
             </div>
             <div class="shader-parameter-actions">
-              <button id="water-parameter-reset" type="button">恢复默认参数</button>
+              <button id="texture-parameter-reset" type="button">恢复默认参数</button>
             </div>
           </fieldset>
         </details>
