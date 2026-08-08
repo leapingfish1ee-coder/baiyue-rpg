@@ -57,6 +57,14 @@ jobs:
           VITE_BASE_PATH: /${{ github.event.repository.name }}/
         run: npm run build
 
+      - name: Install Chromium for browser smoke tests
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      - name: Test browser rendering fallback
+        working-directory: web
+        run: npm run test:smoke
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
