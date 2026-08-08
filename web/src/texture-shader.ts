@@ -9,16 +9,16 @@ import {
   type Renderer,
 } from "./renderer";
 
-export interface TextureShaderParameters {
-  deepSpeed: number;
-  shallowSpeed: number;
-  deepColorStrength: number;
-  shallowColorStrength: number;
-  surfaceSpeed: number;
-  surfaceColorStrength: number;
-  decorationSpeed: number;
-  decorationColorStrength: number;
+export type TextureShaderParameterName = "speed" | "colorStrength" | "colorFrequency";
+
+export interface TextureShaderSlotParameters {
+  speed: number;
+  colorStrength: number;
   colorFrequency: number;
+}
+
+export interface TextureShaderParameters {
+  slots: TextureShaderSlotParameters[];
 }
 
 export type TextureShaderFailureKind = "unavailable" | "initialization" | "context-lost" | "runtime";
@@ -42,31 +42,36 @@ export const WATER_VISUAL_BASELINE_GLSL = `
     outColor = vec4(overlayColor, overlayAlpha);
 `;
 
-export const DEFAULT_TEXTURE_SHADER_PARAMETERS: Readonly<TextureShaderParameters> = Object.freeze({
-  deepSpeed: 0.18,
-  shallowSpeed: 0.30,
-  deepColorStrength: 0.15,
-  shallowColorStrength: 0.22,
-  surfaceSpeed: 0.08,
-  surfaceColorStrength: 0.08,
-  decorationSpeed: 0.10,
-  decorationColorStrength: 0.10,
-  colorFrequency: 0.045,
+export const TEXTURE_SHADER_PARAMETER_LIMITS: Readonly<
+  Record<TextureShaderParameterName, readonly [number, number]>
+> = Object.freeze({
+  speed: [0.001, 2.0] as const,
+  colorStrength: [0, 1.0] as const,
+  colorFrequency: [0.001, 0.5] as const,
 });
 
-const PARAMETER_LIMITS: Record<keyof TextureShaderParameters, readonly [number, number]> = {
-  deepSpeed: [0.02, 0.8],
-  shallowSpeed: [0.02, 1.0],
-  deepColorStrength: [0, 0.6],
-  shallowColorStrength: [0, 0.6],
-  surfaceSpeed: [0.01, 0.5],
-  surfaceColorStrength: [0, 0.35],
-  decorationSpeed: [0.01, 0.6],
-  decorationColorStrength: [0, 0.4],
-  colorFrequency: [0.005, 0.15],
-};
+const DEFAULT_SLOT_PARAMETERS: readonly TextureShaderSlotParameters[] = [
+  { speed: 0.18, colorStrength: 0.15, colorFrequency: 0.045 },
+  { speed: 0.30, colorStrength: 0.22, colorFrequency: 0.045 },
+  { speed: 0.052, colorStrength: 0.06, colorFrequency: 0.045 },
+  { speed: 0.08, colorStrength: 0.08, colorFrequency: 0.045 },
+  { speed: 0.02, colorStrength: 0.036, colorFrequency: 0.045 },
+  { speed: 0.044, colorStrength: 0.068, colorFrequency: 0.045 },
+  { speed: 0.11, colorStrength: 0.10, colorFrequency: 0.045 },
+  { speed: 0.075, colorStrength: 0.08, colorFrequency: 0.045 },
+];
+
+export const DEFAULT_TEXTURE_SHADER_PARAMETERS: Readonly<TextureShaderParameters> = Object.freeze({
+  slots: Object.freeze(DEFAULT_SLOT_PARAMETERS.map((profile) => Object.freeze({ ...profile }))) as unknown as TextureShaderSlotParameters[],
+});
 
 const SLOT_COUNT = TEXTURE_SLOT_NAMES.length;
+
+function cloneParameters(parameters: Readonly<TextureShaderParameters>): TextureShaderParameters {
+  return {
+    slots: parameters.slots.map((profile) => ({ ...profile })),
+  };
+}
 
 const VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -126,7 +131,7 @@ uniform vec3 u_deepColor;
 uniform vec3 u_shallowColor;
 uniform float u_speed[8];
 uniform float u_colorStrength[8];
-uniform float u_colorFrequency;
+uniform float u_colorFrequency[8];
 uniform float u_baseEnabled;
 
 out vec4 outColor;
@@ -198,7 +203,7 @@ void main() {
   float textureAlpha = textureSample.a;
 
   float colorNoise = textureColorNoise(
-    worldTexel * u_colorFrequency,
+    worldTexel * u_colorFrequency[v_slot],
     u_time * u_speed[v_slot]
   );
   float brightness = 1.0 + (colorNoise * 2.0 - 1.0) * u_colorStrength[v_slot];
@@ -234,7 +239,7 @@ export class TextureShaderRenderer {
   private uploadedTextureRevision = -1;
   private cssWidth = 1;
   private cssHeight = 1;
-  private parameters: TextureShaderParameters = { ...DEFAULT_TEXTURE_SHADER_PARAMETERS };
+  private parameters: TextureShaderParameters = cloneParameters(DEFAULT_TEXTURE_SHADER_PARAMETERS);
   private failure: TextureShaderFailure | null = null;
   private failureHandler: ((failure: TextureShaderFailure) => void) | null = null;
 
@@ -338,22 +343,45 @@ export class TextureShaderRenderer {
   }
 
   getParameters(): TextureShaderParameters {
-    return { ...this.parameters };
+    return cloneParameters(this.parameters);
+  }
+
+  getSlotParameters(slot: number): TextureShaderSlotParameters {
+    const profile = this.parameters.slots[slot] ?? DEFAULT_TEXTURE_SHADER_PARAMETERS.slots[slot];
+    if (!profile) {
+      throw new RangeError(`Texture shader slot ${slot} is outside 0..${SLOT_COUNT - 1}.`);
+    }
+    return { ...profile };
+  }
+
+  setSlotParameters(slot: number, next: Partial<TextureShaderSlotParameters>): void {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= SLOT_COUNT) return;
+    const current = this.parameters.slots[slot];
+    if (!current) return;
+
+    const updated = { ...current };
+    for (const key of Object.keys(TEXTURE_SHADER_PARAMETER_LIMITS) as TextureShaderParameterName[]) {
+      const value = next[key];
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      const [minimum, maximum] = TEXTURE_SHADER_PARAMETER_LIMITS[key];
+      updated[key] = Math.min(maximum, Math.max(minimum, value));
+    }
+
+    this.parameters.slots[slot] = updated;
   }
 
   setParameters(next: Partial<TextureShaderParameters>): void {
-    const updated = { ...this.parameters };
-    for (const key of Object.keys(DEFAULT_TEXTURE_SHADER_PARAMETERS) as (keyof TextureShaderParameters)[]) {
-      const value = next[key];
-      if (typeof value !== "number" || !Number.isFinite(value)) continue;
-      const [minimum, maximum] = PARAMETER_LIMITS[key];
-      updated[key] = Math.min(maximum, Math.max(minimum, value));
+    if (!Array.isArray(next.slots)) return;
+    for (let slot = 0; slot < SLOT_COUNT; slot += 1) {
+      const profile = next.slots[slot];
+      if (profile && typeof profile === "object") {
+        this.setSlotParameters(slot, profile);
+      }
     }
-    this.parameters = updated;
   }
 
   resetParameters(): void {
-    this.parameters = { ...DEFAULT_TEXTURE_SHADER_PARAMETERS };
+    this.parameters = cloneParameters(DEFAULT_TEXTURE_SHADER_PARAMETERS);
   }
 
   resize(width: number, height: number, dpr: number): void {
@@ -422,7 +450,7 @@ export class TextureShaderRenderer {
     gl.uniform1f(gl.getUniformLocation(program, "u_time"), timeSeconds);
     gl.uniform1fv(gl.getUniformLocation(program, "u_speed[0]"), this.slotSpeeds());
     gl.uniform1fv(gl.getUniformLocation(program, "u_colorStrength[0]"), this.slotColorStrengths());
-    gl.uniform1f(gl.getUniformLocation(program, "u_colorFrequency"), this.parameters.colorFrequency);
+    gl.uniform1fv(gl.getUniformLocation(program, "u_colorFrequency[0]"), this.slotColorFrequencies());
     gl.uniform1f(gl.getUniformLocation(program, "u_baseEnabled"), renderer.isBaseColorVisible() ? 1 : 0);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -434,31 +462,15 @@ export class TextureShaderRenderer {
   }
 
   private slotSpeeds(): Float32Array {
-    const p = this.parameters;
-    return new Float32Array([
-      p.deepSpeed,
-      p.shallowSpeed,
-      p.surfaceSpeed * 0.65,
-      p.surfaceSpeed,
-      p.surfaceSpeed * 0.25,
-      p.surfaceSpeed * 0.55,
-      p.decorationSpeed * 1.10,
-      p.decorationSpeed * 0.75,
-    ]);
+    return new Float32Array(this.parameters.slots.map((profile) => profile.speed));
   }
 
   private slotColorStrengths(): Float32Array {
-    const p = this.parameters;
-    return new Float32Array([
-      p.deepColorStrength,
-      p.shallowColorStrength,
-      p.surfaceColorStrength * 0.75,
-      p.surfaceColorStrength,
-      p.surfaceColorStrength * 0.45,
-      p.surfaceColorStrength * 0.85,
-      p.decorationColorStrength,
-      p.decorationColorStrength * 0.80,
-    ]);
+    return new Float32Array(this.parameters.slots.map((profile) => profile.colorStrength));
+  }
+
+  private slotColorFrequencies(): Float32Array {
+    return new Float32Array(this.parameters.slots.map((profile) => profile.colorFrequency));
   }
 
   private collectVisibleInstances(camera: Camera, chunks: ChunkManager, tilePixels: number): VisibleInstances {
