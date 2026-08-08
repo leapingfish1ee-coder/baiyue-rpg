@@ -63,6 +63,9 @@ jobs:
 
       - name: Test browser rendering fallback
         working-directory: web
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+          SMOKE_BASE_PATH: /${{ github.event.repository.name }}/
         run: npm run test:smoke
 
       - name: Upload Pages artifact
