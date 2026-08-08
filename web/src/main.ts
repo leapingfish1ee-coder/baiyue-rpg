@@ -14,6 +14,7 @@ function requireElement<T extends Element>(selector: string): T {
 const canvas = requireElement<HTMLCanvasElement>("#world");
 const seedInput = requireElement<HTMLInputElement>("#seed");
 const applySeedButton = requireElement<HTMLButtonElement>("#apply-seed");
+const gridToggle = requireElement<HTMLInputElement>("#grid-toggle");
 const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
 const chunksElement = requireElement<HTMLElement>("#chunks");
@@ -26,6 +27,7 @@ const context: CanvasRenderingContext2D = maybeContext;
 const camera = new Camera(canvas);
 const chunkManager = new ChunkManager();
 const renderer = new Renderer();
+renderer.setGridVisible(gridToggle.checked);
 
 let viewportWidth = 1;
 let viewportHeight = 1;
@@ -66,9 +68,22 @@ function applySeed(): void {
   }
 }
 
+function setGridVisible(visible: boolean): void {
+  gridToggle.checked = visible;
+  renderer.setGridVisible(visible);
+}
+
 applySeedButton.addEventListener("click", applySeed);
 seedInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") applySeed();
+});
+gridToggle.addEventListener("change", () => {
+  setGridVisible(gridToggle.checked);
+});
+window.addEventListener("keydown", (event) => {
+  if (event.repeat || event.code !== "KeyG") return;
+  if (event.target instanceof HTMLInputElement) return;
+  setGridVisible(!renderer.isGridVisible());
 });
 window.addEventListener("resize", resize);
 resize();

@@ -37,18 +37,31 @@ body { background: #111820; }
   box-shadow: 0 8px 28px rgba(0,0,0,.24);
   user-select: none;
 }
-.row { display: flex; gap: 8px; align-items: center; }
-.row label { font-size: 13px; opacity: .72; }
-input, button {
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.row > label:not(.grid-toggle) { font-size: 13px; opacity: .72; }
+input[type="text"], button {
   height: 32px;
   border-radius: 6px;
   border: 1px solid rgba(255,255,255,.16);
   background: #18222d;
   color: inherit;
 }
-input { flex: 1; min-width: 0; padding: 0 9px; font-variant-numeric: tabular-nums; }
+input[type="text"] { flex: 1; min-width: 150px; padding: 0 9px; font-variant-numeric: tabular-nums; }
 button { padding: 0 13px; cursor: pointer; }
 button:hover { background: #22303d; }
+.grid-toggle {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid rgba(255,255,255,.16);
+  border-radius: 6px;
+  background: #18222d;
+  font-size: 12px;
+  cursor: pointer;
+}
+.grid-toggle input { width: 15px; height: 15px; margin: 0; accent-color: #8fb8d8; }
 .stats {
   display: flex;
   flex-wrap: wrap;
