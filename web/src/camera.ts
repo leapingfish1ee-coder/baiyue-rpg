@@ -35,6 +35,10 @@ export class Camera {
     }
   }
 
+  setZoom(zoom: number): void {
+    this.zoom = Math.min(4, Math.max(0.35, zoom));
+  }
+
   private readonly onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0) return;
     this.dragging = true;
