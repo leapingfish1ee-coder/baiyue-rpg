@@ -12,7 +12,11 @@ import {
 const TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v1";
 const LEGACY_WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
 const ZOOM_PRESETS = [0.5, 1, 2, 4] as const;
-const FORCE_SHADER_OFF = new URLSearchParams(window.location.search).get("shader") === "off";
+const queryParameters = new URLSearchParams(window.location.search);
+const FORCE_SHADER_OFF = queryParameters.get("shader") === "off";
+const shaderTimeValue = queryParameters.get("shaderTime");
+const parsedShaderTime = shaderTimeValue === null ? Number.NaN : Number(shaderTimeValue);
+const FIXED_SHADER_TIME = Number.isFinite(parsedShaderTime) ? parsedShaderTime : null;
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -163,9 +167,9 @@ function setRenderMode(
   renderModeElement.dataset.mode = mode;
   renderModeElement.title = detail;
   if (mode === "enhanced") {
-    renderModeElement.textContent = "渲染 Canvas2D + WebGL2 增强";
+    renderModeElement.textContent = "渲染 WebGL2 动态纹理 + Canvas2D 底层";
   } else if (mode === "fallback") {
-    renderModeElement.textContent = "渲染 Canvas2D（GPU 增强已降级）";
+    renderModeElement.textContent = "渲染 Canvas2D（GPU 已降级）";
   } else {
     renderModeElement.textContent = "渲染 Canvas2D";
   }
@@ -173,6 +177,7 @@ function setRenderMode(
 
 function lockShaderToFallback(message: string): void {
   textureShader.setEnabled(false);
+  renderer.setTextureShaderActive(false);
   textureShaderToggle.checked = false;
   textureShaderToggle.disabled = true;
   textureShaderToggle.title = message;
@@ -188,12 +193,13 @@ function handleTextureShaderFailure(failure: TextureShaderFailure): void {
 function setTextureShaderEnabled(enabled: boolean): void {
   if (FORCE_SHADER_OFF) {
     textureShader.setEnabled(false);
+    renderer.setTextureShaderActive(false);
     textureShaderToggle.checked = false;
     textureShaderToggle.disabled = true;
     textureShaderToggle.title = "自动化测试强制使用 Canvas2D 基线渲染。";
     textureParameterFields.disabled = true;
     textureParameterReset.disabled = true;
-    setRenderMode("canvas", "通过 ?shader=off 强制关闭 WebGL2 增强。静态纹理仍完整绘制。");
+    setRenderMode("canvas", "通过 ?shader=off 强制关闭 WebGL2。Canvas2D 绘制完整静态纹理。");
     return;
   }
 
@@ -205,14 +211,18 @@ function setTextureShaderEnabled(enabled: boolean): void {
 
   const active = enabled && textureShader.available;
   textureShaderToggle.checked = active;
+  renderer.setTextureShaderActive(active);
   textureShader.setEnabled(active);
   textureParameterFields.disabled = false;
   textureParameterReset.disabled = false;
 
   if (active) {
-    setRenderMode("enhanced", "Canvas2D 始终绘制完整纹理；WebGL2 仅叠加动态颜色效果。 ");
+    setRenderMode(
+      "enhanced",
+      "WebGL2 负责完整动态纹理；Canvas2D 保留地形底层。GPU 故障时立即切换为完整 Canvas2D 静态纹理。",
+    );
   } else {
-    setRenderMode("canvas", "WebGL2 动态增强已关闭；Canvas2D 静态纹理保持完整。 ");
+    setRenderMode("canvas", "WebGL2 动态纹理已关闭；Canvas2D 绘制完整静态纹理。");
   }
 }
 
@@ -365,7 +375,7 @@ function frame(now: number): void {
     renderer.tilePixels,
   );
   renderer.draw(context, viewportWidth, viewportHeight, camera, chunkManager);
-  textureShader.draw(now / 1000, camera, chunkManager, renderer);
+  textureShader.draw(FIXED_SHADER_TIME ?? now / 1000, camera, chunkManager, renderer);
 
   const centerTileX = Math.floor(camera.x / renderer.tilePixels);
   const centerTileY = Math.floor(camera.y / renderer.tilePixels);
