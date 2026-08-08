@@ -1,4 +1,9 @@
-import { Renderer, SOURCE_TILE_PIXELS, TERRAIN_NAMES } from "./renderer";
+import {
+  Renderer,
+  SOURCE_TILE_PIXELS,
+  TERRAIN_BASE_COLORS,
+  TERRAIN_NAMES,
+} from "./renderer";
 
 const STORAGE_KEY = "baiyue-rpg:terrain-sheet:v1";
 const MAX_STORED_DATA_URL_LENGTH = 1_500_000;
@@ -77,13 +82,8 @@ export class TextureTool {
     }
 
     const masks = this.extractMasks(image, columns, rows);
-    const visibleMasks = masks.filter((mask) => this.isMaskVisible(mask));
-    if (visibleMasks.length === 0) {
-      throw new Error("前 7 个 8×8 单元格中没有可见像素");
-    }
-
-    const broadcastSingleMask = visibleMasks.length === 1;
-    this.renderer.setTerrainMasks(broadcastSingleMask ? [visibleMasks[0]!] : masks);
+    const visibleCount = masks.reduce((count, mask) => count + (this.isMaskVisible(mask) ? 1 : 0), 0);
+    this.renderer.setTerrainMasks(masks);
     this.renderPreviews();
 
     let persistenceNote = "";
@@ -101,39 +101,40 @@ export class TextureTool {
       }
     }
 
-    const mode = broadcastSingleMask
-      ? "检测到 1 个非空纹理，已复用到全部 7 种地形"
-      : `按行优先顺序读取前 ${Math.min(7, columns * rows)} 格`;
-    this.setStatus(`${label} · ${image.naturalWidth}×${image.naturalHeight}px · ${mode}${persistenceNote}`);
+    this.setStatus(
+      `${label} · ${image.naturalWidth}×${image.naturalHeight}px · 固定顺序读取 7 格，${visibleCount} 格非空${persistenceNote}`,
+    );
   }
 
   private extractMasks(image: HTMLImageElement, columns: number, rows: number): HTMLCanvasElement[] {
-    const count = Math.min(TERRAIN_NAMES.length, columns * rows);
+    const availableCount = columns * rows;
     const masks: HTMLCanvasElement[] = [];
 
-    for (let index = 0; index < count; index += 1) {
-      const sourceX = (index % columns) * SOURCE_TILE_PIXELS;
-      const sourceY = Math.floor(index / columns) * SOURCE_TILE_PIXELS;
+    for (let index = 0; index < TERRAIN_NAMES.length; index += 1) {
       const canvas = document.createElement("canvas");
       canvas.width = SOURCE_TILE_PIXELS;
       canvas.height = SOURCE_TILE_PIXELS;
       const context = canvas.getContext("2d", { willReadFrequently: true });
       if (!context) throw new Error("2D canvas context is unavailable.");
-
       context.imageSmoothingEnabled = false;
       context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
-      context.drawImage(
-        image,
-        sourceX,
-        sourceY,
-        SOURCE_TILE_PIXELS,
-        SOURCE_TILE_PIXELS,
-        0,
-        0,
-        SOURCE_TILE_PIXELS,
-        SOURCE_TILE_PIXELS,
-      );
-      this.normalizeMask(context);
+
+      if (index < availableCount) {
+        const sourceX = (index % columns) * SOURCE_TILE_PIXELS;
+        const sourceY = Math.floor(index / columns) * SOURCE_TILE_PIXELS;
+        context.drawImage(
+          image,
+          sourceX,
+          sourceY,
+          SOURCE_TILE_PIXELS,
+          SOURCE_TILE_PIXELS,
+          0,
+          0,
+          SOURCE_TILE_PIXELS,
+          SOURCE_TILE_PIXELS,
+        );
+        this.normalizeMask(context);
+      }
       masks.push(canvas);
     }
 
@@ -198,13 +199,15 @@ export class TextureTool {
     const sprites = this.renderer.getTerrainSprites();
     for (let index = 0; index < this.previewCanvases.length; index += 1) {
       const canvas = this.previewCanvases[index];
-      const sprite = sprites[index];
-      if (!canvas || !sprite) continue;
+      if (!canvas) continue;
       const context = canvas.getContext("2d");
       if (!context) continue;
+      const baseColor = TERRAIN_BASE_COLORS[index] ?? [24, 24, 24];
       context.imageSmoothingEnabled = false;
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(sprite, 0, 0);
+      context.fillStyle = `rgb(${baseColor[0]} ${baseColor[1]} ${baseColor[2]})`;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const sprite = sprites[index];
+      if (sprite) context.drawImage(sprite, 0, 0);
     }
   }
 
@@ -212,7 +215,7 @@ export class TextureTool {
     localStorage.removeItem(STORAGE_KEY);
     this.renderer.resetTerrainTextures();
     this.renderPreviews();
-    this.setStatus("已恢复项目默认 8×8 纹理");
+    this.setStatus("已恢复项目默认纹理：槽位 0 有纹理，其余槽位为空");
   }
 
   private setStatus(message: string, isError = false): void {

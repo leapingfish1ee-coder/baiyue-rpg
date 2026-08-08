@@ -34,14 +34,14 @@
           <strong>Tile 纹理工具</strong>
           <button id="texture-tool-close" type="button">关闭</button>
         </div>
-        <p class="texture-tool-note">上传 PNG / BMP / WebP。按 8×8 单元格从左到右、从上到下读取前 7 格，对应：深水、浅水、沙地、草地、森林、岩地、雪地。若只检测到一个非空纹理，则复用到全部地形。</p>
+        <p class="texture-tool-note">上传 PNG / BMP / WebP。严格按 8×8 单元格从左到右、从上到下读取前 7 格，对应：深水、浅水、沙地、草地、森林、岩地、雪地。纹理格允许为空，不会自动复用其他格；每个 tile 始终保留较暗的地形底色。</p>
         <label class="texture-file-label" for="texture-file">选择 spritesheet</label>
         <input id="texture-file" type="file" accept="image/png,image/bmp,image/webp,image/*" />
         <div id="texture-preview" class="texture-preview" aria-label="地形纹理预览"></div>
         <div class="texture-tool-actions">
           <button id="texture-reset" type="button">恢复默认</button>
         </div>
-        <div id="texture-status" class="texture-status" aria-live="polite">当前使用项目默认 8×8 纹理</div>
+        <div id="texture-status" class="texture-status" aria-live="polite">当前使用项目默认纹理：槽位 0 有纹理，其余槽位为空</div>
       </aside>
     </main>
     <script type="module" src="/src/main.ts"></script>

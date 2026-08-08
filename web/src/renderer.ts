@@ -13,11 +13,20 @@ export const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = 
   [229, 235, 238], // snow
 ];
 
+const BASE_BRIGHTNESS = 0.42;
+export const TERRAIN_BASE_COLORS: ReadonlyArray<readonly [number, number, number]> = TERRAIN_COLORS.map(
+  ([red, green, blue]) => [
+    Math.round(red * BASE_BRIGHTNESS),
+    Math.round(green * BASE_BRIGHTNESS),
+    Math.round(blue * BASE_BRIGHTNESS),
+  ] as const,
+);
+
 export const SOURCE_TILE_PIXELS = 8;
 const MAX_SURFACE_CACHE = 32;
 const WORLD_BACKGROUND = "#000000";
 
-// Default mask from the latest uploaded sprite: a centered 2×2 mark in an 8×8 cell.
+// Current project default sheet has only slot 0 populated; slots 1..6 are intentionally empty.
 const DEFAULT_TILE_MASK = [
   "00000000",
   "00000000",
@@ -30,16 +39,15 @@ const DEFAULT_TILE_MASK = [
 ] as const;
 
 export class Renderer {
-  /** Base art/grid size. World generation remains tile-coordinate based. */
   readonly tilePixels = 32;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
-  private readonly defaultMask: HTMLCanvasElement;
+  private readonly defaultMasks: HTMLCanvasElement[];
   private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
 
   constructor() {
-    this.defaultMask = this.createDefaultMask();
-    this.terrainSprites = this.createTintedSprites([this.defaultMask]);
+    this.defaultMasks = this.createDefaultMasks();
+    this.terrainSprites = this.createTintedSprites(this.defaultMasks);
   }
 
   setGridVisible(visible: boolean): void {
@@ -51,12 +59,12 @@ export class Renderer {
   }
 
   setTerrainMasks(masks: readonly CanvasImageSource[]): void {
-    this.terrainSprites = this.createTintedSprites(masks.length > 0 ? masks : [this.defaultMask]);
+    this.terrainSprites = this.createTintedSprites(masks);
     this.clear();
   }
 
   resetTerrainTextures(): void {
-    this.terrainSprites = this.createTintedSprites([this.defaultMask]);
+    this.terrainSprites = this.createTintedSprites(this.defaultMasks);
     this.clear();
   }
 
@@ -92,32 +100,22 @@ export class Renderer {
         worldX > camera.x + halfWorldWidth ||
         worldY + chunkWorldPixels < camera.y - halfWorldHeight ||
         worldY > camera.y + halfWorldHeight
-      ) {
-        continue;
-      }
+      ) continue;
 
       const screenX = (worldX - camera.x) * camera.zoom + width / 2;
       const screenY = (worldY - camera.y) * camera.zoom + height / 2;
       const screenSize = chunkWorldPixels * camera.zoom;
-      const surface = this.getSurface(chunk, chunks.chunkSize);
-      context.drawImage(surface, screenX, screenY, screenSize, screenSize);
+      context.drawImage(this.getSurface(chunk, chunks.chunkSize), screenX, screenY, screenSize, screenSize);
     }
 
-    if (this.gridVisible) {
-      this.drawGrid(context, width, height, camera, chunks.chunkSize);
-    }
-
+    if (this.gridVisible) this.drawGrid(context, width, height, camera, chunks.chunkSize);
     this.cleanupSurfaces(chunks);
   }
 
-  private createDefaultMask(): HTMLCanvasElement {
-    const mask = document.createElement("canvas");
-    mask.width = SOURCE_TILE_PIXELS;
-    mask.height = SOURCE_TILE_PIXELS;
-    const context = mask.getContext("2d");
+  private createDefaultMasks(): HTMLCanvasElement[] {
+    const masks = Array.from({ length: TERRAIN_NAMES.length }, () => this.createEmptyMask());
+    const context = masks[0]?.getContext("2d");
     if (!context) throw new Error("2D canvas context is unavailable.");
-
-    context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
     context.fillStyle = "#ffffff";
     for (let y = 0; y < SOURCE_TILE_PIXELS; y += 1) {
       const row = DEFAULT_TILE_MASK[y];
@@ -126,21 +124,25 @@ export class Renderer {
         if (row[x] === "1") context.fillRect(x, y, 1, 1);
       }
     }
-    return mask;
+    return masks;
+  }
+
+  private createEmptyMask(): HTMLCanvasElement {
+    const canvas = document.createElement("canvas");
+    canvas.width = SOURCE_TILE_PIXELS;
+    canvas.height = SOURCE_TILE_PIXELS;
+    return canvas;
   }
 
   private createTintedSprites(masks: readonly CanvasImageSource[]): HTMLCanvasElement[] {
-    const firstMask = masks[0] ?? this.defaultMask;
     return TERRAIN_COLORS.map((color, index) => {
-      const mask = masks[index] ?? firstMask;
-      const canvas = document.createElement("canvas");
-      canvas.width = SOURCE_TILE_PIXELS;
-      canvas.height = SOURCE_TILE_PIXELS;
+      const canvas = this.createEmptyMask();
       const context = canvas.getContext("2d");
       if (!context) throw new Error("2D canvas context is unavailable.");
+      const mask = masks[index];
+      if (!mask) return canvas;
 
       context.imageSmoothingEnabled = false;
-      context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       context.drawImage(mask, 0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       context.globalCompositeOperation = "source-in";
       context.fillStyle = `rgb(${color[0]} ${color[1]} ${color[2]})`;
@@ -166,14 +168,10 @@ export class Renderer {
     const maxTileX = Math.ceil((camera.x + halfWorldWidth) / this.tilePixels);
     const minTileY = Math.floor((camera.y - halfWorldHeight) / this.tilePixels);
     const maxTileY = Math.ceil((camera.y + halfWorldHeight) / this.tilePixels);
-
-    const tileToScreenX = (tileX: number): number =>
-      (tileX * this.tilePixels - camera.x) * camera.zoom + width / 2;
-    const tileToScreenY = (tileY: number): number =>
-      (tileY * this.tilePixels - camera.y) * camera.zoom + height / 2;
+    const tileToScreenX = (tileX: number): number => (tileX * this.tilePixels - camera.x) * camera.zoom + width / 2;
+    const tileToScreenY = (tileY: number): number => (tileY * this.tilePixels - camera.y) * camera.zoom + height / 2;
 
     context.save();
-
     context.beginPath();
     context.strokeStyle = "rgba(255, 255, 255, 0.18)";
     context.lineWidth = 1;
@@ -207,7 +205,6 @@ export class Renderer {
       context.lineTo(width, screenY);
     }
     context.stroke();
-
     context.restore();
   }
 
@@ -220,22 +217,21 @@ export class Renderer {
     canvas.height = chunkSize * SOURCE_TILE_PIXELS;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas context is unavailable.");
-
     context.imageSmoothingEnabled = false;
     context.fillStyle = WORLD_BACKGROUND;
     context.fillRect(0, 0, canvas.width, canvas.height);
 
     for (let i = 0; i < chunk.tiles.length; i += 1) {
       const terrainId = chunk.tiles[i] ?? 0;
-      const sprite = this.terrainSprites[terrainId] ?? this.terrainSprites[0];
-      if (!sprite) continue;
-      const tileX = i % chunkSize;
-      const tileY = Math.floor(i / chunkSize);
-      context.drawImage(
-        sprite,
-        tileX * SOURCE_TILE_PIXELS,
-        tileY * SOURCE_TILE_PIXELS,
-      );
+      const baseColor = TERRAIN_BASE_COLORS[terrainId] ?? [24, 24, 24];
+      const tileX = (i % chunkSize) * SOURCE_TILE_PIXELS;
+      const tileY = Math.floor(i / chunkSize) * SOURCE_TILE_PIXELS;
+
+      context.fillStyle = `rgb(${baseColor[0]} ${baseColor[1]} ${baseColor[2]})`;
+      context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+
+      const sprite = this.terrainSprites[terrainId];
+      if (sprite) context.drawImage(sprite, tileX, tileY);
     }
 
     this.surfaces.set(chunk.key, canvas);
