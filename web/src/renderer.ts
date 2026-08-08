@@ -11,11 +11,21 @@ const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
   [229, 235, 238], // snow
 ];
 
+const SOURCE_TILE_PIXELS = 8;
+const MAX_SURFACE_CACHE = 32;
+const WORLD_BACKGROUND = "#000000";
+
 export class Renderer {
   /** Base art/grid size. World generation remains tile-coordinate based. */
   readonly tilePixels = 32;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
   private gridVisible = true;
+  private terrainSprites: HTMLCanvasElement[];
+
+  constructor() {
+    this.terrainSprites = this.createTintedSprites(this.createFallbackMask());
+    void this.loadSpriteSheet();
+  }
 
   setGridVisible(visible: boolean): void {
     this.gridVisible = visible;
@@ -37,7 +47,7 @@ export class Renderer {
     chunks: ChunkManager,
   ): void {
     context.clearRect(0, 0, width, height);
-    context.fillStyle = "#111820";
+    context.fillStyle = WORLD_BACKGROUND;
     context.fillRect(0, 0, width, height);
     context.imageSmoothingEnabled = false;
 
@@ -71,6 +81,75 @@ export class Renderer {
     this.cleanupSurfaces(chunks);
   }
 
+  private loadSpriteSheet(): Promise<void> {
+    const source = `${import.meta.env.BASE_URL}sprites/terrain-sheet.png`;
+    return new Promise((resolve) => {
+      const image = new Image();
+      image.decoding = "async";
+      image.onload = () => {
+        const mask = document.createElement("canvas");
+        mask.width = SOURCE_TILE_PIXELS;
+        mask.height = SOURCE_TILE_PIXELS;
+        const context = mask.getContext("2d");
+        if (context) {
+          context.imageSmoothingEnabled = false;
+          context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+          context.drawImage(
+            image,
+            0,
+            0,
+            SOURCE_TILE_PIXELS,
+            SOURCE_TILE_PIXELS,
+            0,
+            0,
+            SOURCE_TILE_PIXELS,
+            SOURCE_TILE_PIXELS,
+          );
+          this.terrainSprites = this.createTintedSprites(mask);
+          this.clear();
+        }
+        resolve();
+      };
+      image.onerror = () => resolve();
+      image.src = source;
+    });
+  }
+
+  private createFallbackMask(): HTMLCanvasElement {
+    const mask = document.createElement("canvas");
+    mask.width = SOURCE_TILE_PIXELS;
+    mask.height = SOURCE_TILE_PIXELS;
+    const context = mask.getContext("2d");
+    if (!context) throw new Error("2D canvas context is unavailable.");
+
+    context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+    context.fillStyle = "#ffffff";
+    for (let y = 0; y < SOURCE_TILE_PIXELS; y += 1) {
+      for (let x = 0; x < SOURCE_TILE_PIXELS; x += 1) {
+        if ((x + y) % 2 === 0) context.fillRect(x, y, 1, 1);
+      }
+    }
+    return mask;
+  }
+
+  private createTintedSprites(mask: CanvasImageSource): HTMLCanvasElement[] {
+    return TERRAIN_COLORS.map((color) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = SOURCE_TILE_PIXELS;
+      canvas.height = SOURCE_TILE_PIXELS;
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("2D canvas context is unavailable.");
+
+      context.imageSmoothingEnabled = false;
+      context.drawImage(mask, 0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+      context.globalCompositeOperation = "source-in";
+      context.fillStyle = `rgb(${color[0]} ${color[1]} ${color[2]})`;
+      context.fillRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
+      context.globalCompositeOperation = "source-over";
+      return canvas;
+    });
+  }
+
   private drawGrid(
     context: CanvasRenderingContext2D,
     width: number,
@@ -96,7 +175,7 @@ export class Renderer {
     context.save();
 
     context.beginPath();
-    context.strokeStyle = "rgba(6, 10, 14, 0.32)";
+    context.strokeStyle = "rgba(255, 255, 255, 0.18)";
     context.lineWidth = 1;
     for (let tileX = minTileX; tileX <= maxTileX; tileX += 1) {
       if (tileX % macroSize === 0) continue;
@@ -113,7 +192,7 @@ export class Renderer {
     context.stroke();
 
     context.beginPath();
-    context.strokeStyle = "rgba(238, 244, 250, 0.58)";
+    context.strokeStyle = "rgba(255, 255, 255, 0.72)";
     context.lineWidth = 1.5;
     const firstMacroX = Math.floor(minTileX / macroSize) * macroSize;
     const firstMacroY = Math.floor(minTileY / macroSize) * macroSize;
@@ -137,30 +216,40 @@ export class Renderer {
     if (existing) return existing;
 
     const canvas = document.createElement("canvas");
-    canvas.width = chunkSize;
-    canvas.height = chunkSize;
+    canvas.width = chunkSize * SOURCE_TILE_PIXELS;
+    canvas.height = chunkSize * SOURCE_TILE_PIXELS;
     const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas context is unavailable.");
 
-    const image = context.createImageData(chunkSize, chunkSize);
+    context.imageSmoothingEnabled = false;
+    context.fillStyle = WORLD_BACKGROUND;
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
     for (let i = 0; i < chunk.tiles.length; i += 1) {
       const terrainId = chunk.tiles[i] ?? 0;
-      const color = TERRAIN_COLORS[terrainId] ?? [255, 0, 255];
-      const offset = i * 4;
-      image.data[offset] = color[0];
-      image.data[offset + 1] = color[1];
-      image.data[offset + 2] = color[2];
-      image.data[offset + 3] = 255;
+      const sprite = this.terrainSprites[terrainId] ?? this.terrainSprites[0];
+      if (!sprite) continue;
+      const tileX = i % chunkSize;
+      const tileY = Math.floor(i / chunkSize);
+      context.drawImage(
+        sprite,
+        tileX * SOURCE_TILE_PIXELS,
+        tileY * SOURCE_TILE_PIXELS,
+      );
     }
-    context.putImageData(image, 0, 0);
+
     this.surfaces.set(chunk.key, canvas);
     return canvas;
   }
 
   private cleanupSurfaces(chunks: ChunkManager): void {
-    if (this.surfaces.size < 160) return;
     for (const key of this.surfaces.keys()) {
       if (!chunks.has(key)) this.surfaces.delete(key);
+    }
+    while (this.surfaces.size > MAX_SURFACE_CACHE) {
+      const oldest = this.surfaces.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.surfaces.delete(oldest);
     }
   }
 }
