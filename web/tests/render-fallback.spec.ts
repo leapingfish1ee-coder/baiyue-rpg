@@ -1,4 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
+import {
+  WATER_VISUAL_BASELINE_GLSL,
+  WATER_VISUAL_BASELINE_VERSION,
+} from "../src/texture-shader";
+
+const APPROVED_WATER_COMPOSITE = `
+    vec3 baseColor = deep ? u_deepBase : u_shallowBase;
+    vec3 fullColor = deep ? u_deepColor : u_shallowColor;
+    vec3 ambientColor = mix(baseColor * 1.05, fullColor * 0.52, colorNoise);
+
+    vec3 overlayColor = mix(ambientColor, textureColor, textureAlpha);
+    float ambientAlpha = deep ? 0.16 : 0.20;
+    float overlayAlpha = mix(ambientAlpha + colorNoise * 0.07, 0.94, textureAlpha);
+
+    outColor = vec4(overlayColor, overlayAlpha);
+`;
 
 async function waitForWorld(page: Page): Promise<void> {
   await expect(page.locator("#status")).toContainText("WASM v", { timeout: 30_000 });
@@ -27,6 +43,11 @@ async function waitForWorld(page: Page): Promise<void> {
   })).toBeGreaterThan(20);
 }
 
+test("validated water visual composition remains pinned to b67 baseline", () => {
+  expect(WATER_VISUAL_BASELINE_VERSION).toBe("b67e8bad260b3816447e067fcedd2524da0c46f3");
+  expect(WATER_VISUAL_BASELINE_GLSL).toBe(APPROVED_WATER_COMPOSITE);
+});
+
 test("Canvas2D remains fully usable when WebGL2 cannot be created", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
@@ -51,16 +72,13 @@ test("Canvas2D remains fully usable when WebGL2 cannot be created", async ({ pag
   expect(pageErrors).toEqual([]);
 });
 
-test("WebGL2 shader initializes, then context loss degrades without losing the world", async ({ page }) => {
+test("WebGL2 shader initializes, then context loss restores complete Canvas2D textures", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
-  await page.goto("./");
+  await page.goto("./?shaderTime=10");
   await waitForWorld(page);
 
-  // CI launches Chromium with SwiftShader WebGL2. This assertion is intentional:
-  // a shader compile/link/resource failure must fail deployment rather than being
-  // silently accepted as a valid fallback result.
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced");
   await expect(page.locator("#render-mode")).toContainText("WebGL2");
   await expect(page.locator("#texture-shader-toggle")).toBeChecked();
