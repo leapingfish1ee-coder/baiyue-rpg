@@ -4,19 +4,64 @@ import { ChunkManager } from "./chunk-manager";
 import { Renderer, TERRAIN_NAMES, TEXTURE_SLOT_NAMES } from "./renderer";
 import { TextureTool } from "./texture-tool";
 import {
+  GLOBAL_LIGHTING_PARAMETER_LIMITS,
+  TEXTURE_SHADER_PARAMETER_LIMITS,
   TextureShaderRenderer,
+  WATER_VISUAL_BASELINE_VERSION,
+  type GlobalLightingParameters,
   type TextureShaderFailure,
   type TextureShaderParameterName,
   type TextureShaderParameters,
 } from "./texture-shader";
 
 const TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v2";
+const GLOBAL_LIGHTING_STORAGE_KEY = "baiyue-rpg:global-lighting-params:v1";
+const DEBUG_PANEL_STORAGE_KEY = "baiyue-rpg:debug-panel-collapsed:v1";
 const LEGACY_TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v1";
 const LEGACY_WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
+const DEBUG_EXPORT_SCHEMA = "baiyue-rpg.debug-render-config/v1";
 const ZOOM_PRESETS = [0.5, 1, 2, 4] as const;
 const TEXTURE_PARAMETER_KEYS = ["speed", "colorStrength", "colorFrequency"] as const satisfies readonly TextureShaderParameterName[];
+const LIGHTING_PARAMETER_KEYS = [
+  "exposure",
+  "cloudDensity",
+  "shadowStrength",
+  "cloudScale",
+  "softness",
+  "detail",
+  "windSpeed",
+  "windDirection",
+] as const satisfies readonly (keyof GlobalLightingParameters)[];
+
+const TEXTURE_PARAMETER_META: Readonly<Record<TextureShaderParameterName, {
+  label: string;
+  step: number;
+  decimals: number;
+}>> = {
+  speed: { label: "速度", step: 0.001, decimals: 3 },
+  colorStrength: { label: "明暗", step: 0.001, decimals: 3 },
+  colorFrequency: { label: "频率", step: 0.001, decimals: 3 },
+};
+
+const LIGHTING_PARAMETER_META: Readonly<Record<keyof GlobalLightingParameters, {
+  label: string;
+  step: number;
+  decimals: number;
+}>> = {
+  exposure: { label: "曝光 EV", step: 0.05, decimals: 2 },
+  cloudDensity: { label: "云密度", step: 0.01, decimals: 2 },
+  shadowStrength: { label: "云影强度", step: 0.01, decimals: 2 },
+  cloudScale: { label: "云尺度", step: 0.0001, decimals: 4 },
+  softness: { label: "边缘柔度", step: 0.01, decimals: 2 },
+  detail: { label: "云细节", step: 0.01, decimals: 2 },
+  windSpeed: { label: "风速", step: 0.01, decimals: 2 },
+  windDirection: { label: "风向 °", step: 1, decimals: 0 },
+};
+
 const queryParameters = new URLSearchParams(window.location.search);
 const FORCE_SHADER_OFF = queryParameters.get("shader") === "off";
+const LIGHTING_DIAGNOSTIC_MODE = queryParameters.get("lighting");
+const LOCK_LIGHTING_PARAMETERS = LIGHTING_DIAGNOSTIC_MODE === "off" || LIGHTING_DIAGNOSTIC_MODE === "neutral";
 const shaderTimeValue = queryParameters.get("shaderTime");
 const parsedShaderTime = shaderTimeValue === null ? Number.NaN : Number(shaderTimeValue);
 const FIXED_SHADER_TIME = Number.isFinite(parsedShaderTime) ? parsedShaderTime : null;
@@ -29,13 +74,21 @@ function requireElement<T extends Element>(selector: string): T {
 
 const canvas = requireElement<HTMLCanvasElement>("#world");
 const textureCanvas = requireElement<HTMLCanvasElement>("#texture-effects");
+const hud = requireElement<HTMLElement>("#hud");
+const debugPanelCollapse = requireElement<HTMLButtonElement>("#debug-panel-collapse");
+const debugExportButton = requireElement<HTMLButtonElement>("#debug-export");
+const debugExportStatus = requireElement<HTMLElement>("#debug-export-status");
 const seedInput = requireElement<HTMLInputElement>("#seed");
 const applySeedButton = requireElement<HTMLButtonElement>("#apply-seed");
 const gridToggle = requireElement<HTMLInputElement>("#grid-toggle");
 const baseColorToggle = requireElement<HTMLInputElement>("#base-color-toggle");
 const textureShaderToggle = requireElement<HTMLInputElement>("#texture-shader-toggle");
 const textureParameterFields = requireElement<HTMLFieldSetElement>("#texture-parameter-fields");
+const textureParameterTable = requireElement<HTMLElement>("#texture-parameter-table");
 const textureParameterReset = requireElement<HTMLButtonElement>("#texture-parameter-reset");
+const lightingParameterFields = requireElement<HTMLFieldSetElement>("#lighting-parameter-fields");
+const lightingParameterGrid = requireElement<HTMLElement>("#lighting-parameter-grid");
+const lightingParameterReset = requireElement<HTMLButtonElement>("#lighting-parameter-reset");
 const zoomPresetButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-zoom]"));
 const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
@@ -57,57 +110,181 @@ renderer.setBaseColorVisible(baseColorToggle.checked);
 type TextureControlDefinition = {
   slot: number;
   key: TextureShaderParameterName;
-  input: HTMLInputElement;
-  output: HTMLOutputElement;
+  range: HTMLInputElement;
+  number: HTMLInputElement;
   decimals: number;
-  suffix: string;
 };
 
-function isTextureParameterName(value: string | undefined): value is TextureShaderParameterName {
-  return TEXTURE_PARAMETER_KEYS.includes(value as TextureShaderParameterName);
+type LightingControlDefinition = {
+  key: keyof GlobalLightingParameters;
+  range: HTMLInputElement;
+  number: HTMLInputElement;
+  decimals: number;
+};
+
+function configureNumericInput(
+  input: HTMLInputElement,
+  minimum: number,
+  maximum: number,
+  step: number,
+): void {
+  input.min = String(minimum);
+  input.max = String(maximum);
+  input.step = String(step);
 }
 
-const textureControls: TextureControlDefinition[] = Array.from(
-  document.querySelectorAll<HTMLInputElement>("[data-texture-slot][data-texture-parameter]"),
-).map((input) => {
-  const slot = Number(input.dataset.textureSlot);
-  const key = input.dataset.textureParameter;
-  if (!Number.isInteger(slot) || slot < 0 || slot >= TEXTURE_SLOT_NAMES.length) {
-    throw new Error(`Invalid texture shader slot on #${input.id}: ${input.dataset.textureSlot ?? "missing"}`);
+function buildTextureControls(): TextureControlDefinition[] {
+  textureParameterTable.replaceChildren();
+  const controls: TextureControlDefinition[] = [];
+
+  const header = document.createElement("div");
+  header.className = "parameter-table-header";
+  for (const label of ["纹理", "速度", "明暗", "频率"]) {
+    const span = document.createElement("span");
+    span.textContent = label;
+    header.append(span);
   }
-  if (!isTextureParameterName(key)) {
-    throw new Error(`Invalid texture shader parameter on #${input.id}: ${key ?? "missing"}`);
+  textureParameterTable.append(header);
+
+  TEXTURE_SLOT_NAMES.forEach((slotName, slot) => {
+    const row = document.createElement("div");
+    row.className = "parameter-row";
+    row.dataset.textureRow = String(slot);
+
+    const name = document.createElement("span");
+    name.className = "parameter-row-name";
+    name.textContent = slotName;
+    row.append(name);
+
+    for (const key of TEXTURE_PARAMETER_KEYS) {
+      const meta = TEXTURE_PARAMETER_META[key];
+      const [minimum, maximum] = TEXTURE_SHADER_PARAMETER_LIMITS[key];
+      const cell = document.createElement("label");
+      cell.className = "parameter-control";
+      cell.title = `${slotName} · ${meta.label}`;
+
+      const range = document.createElement("input");
+      range.id = `texture-slot-${slot}-${key}`;
+      range.type = "range";
+      range.dataset.textureSlot = String(slot);
+      range.dataset.textureParameter = key;
+      configureNumericInput(range, minimum, maximum, meta.step);
+      range.setAttribute("aria-label", `${slotName} ${meta.label}`);
+
+      const number = document.createElement("input");
+      number.id = `${range.id}-number`;
+      number.type = "number";
+      number.inputMode = "decimal";
+      configureNumericInput(number, minimum, maximum, meta.step);
+      number.setAttribute("aria-label", `${slotName} ${meta.label}精确值`);
+
+      cell.append(range, number);
+      row.append(cell);
+      controls.push({ slot, key, range, number, decimals: meta.decimals });
+    }
+
+    textureParameterTable.append(row);
+  });
+
+  return controls;
+}
+
+function buildLightingControls(): LightingControlDefinition[] {
+  lightingParameterGrid.replaceChildren();
+  const controls: LightingControlDefinition[] = [];
+
+  for (const key of LIGHTING_PARAMETER_KEYS) {
+    const meta = LIGHTING_PARAMETER_META[key];
+    const [minimum, maximum] = GLOBAL_LIGHTING_PARAMETER_LIMITS[key];
+    const label = document.createElement("label");
+    label.className = "lighting-control";
+
+    const name = document.createElement("span");
+    name.textContent = meta.label;
+
+    const range = document.createElement("input");
+    range.id = `lighting-${key}`;
+    range.type = "range";
+    range.dataset.lightingParameter = key;
+    configureNumericInput(range, minimum, maximum, meta.step);
+    range.setAttribute("aria-label", meta.label);
+
+    const number = document.createElement("input");
+    number.id = `${range.id}-number`;
+    number.type = "number";
+    number.inputMode = "decimal";
+    configureNumericInput(number, minimum, maximum, meta.step);
+    number.setAttribute("aria-label", `${meta.label}精确值`);
+
+    label.append(name, range, number);
+    lightingParameterGrid.append(label);
+    controls.push({ key, range, number, decimals: meta.decimals });
   }
 
-  return {
-    slot,
-    key,
-    input,
-    output: requireElement<HTMLOutputElement>(`#${input.id}-value`),
-    decimals: 3,
-    suffix: key === "speed" ? "×" : "",
-  };
-});
+  return controls;
+}
+
+const textureControls = buildTextureControls();
+const lightingControls = buildLightingControls();
 
 const expectedTextureControlCount = TEXTURE_SLOT_NAMES.length * TEXTURE_PARAMETER_KEYS.length;
 if (textureControls.length !== expectedTextureControlCount) {
   throw new Error(`Expected ${expectedTextureControlCount} texture shader controls, found ${textureControls.length}.`);
 }
+if (lightingControls.length !== LIGHTING_PARAMETER_KEYS.length) {
+  throw new Error(`Expected ${LIGHTING_PARAMETER_KEYS.length} lighting controls, found ${lightingControls.length}.`);
+}
+
+function syncNumericPair(range: HTMLInputElement, number: HTMLInputElement, value: number, decimals: number): void {
+  range.value = String(value);
+  number.value = value.toFixed(decimals);
+}
 
 function syncTextureParameterControls(): void {
   for (const control of textureControls) {
     const value = textureShader.getSlotParameters(control.slot)[control.key];
-    control.input.value = String(value);
-    control.output.textContent = `${value.toFixed(control.decimals)}${control.suffix}`;
+    syncNumericPair(control.range, control.number, value, control.decimals);
+  }
+}
+
+function syncLightingParameterControls(): void {
+  const parameters = textureShader.getLightingParameters();
+  for (const control of lightingControls) {
+    syncNumericPair(control.range, control.number, parameters[control.key], control.decimals);
+  }
+}
+
+function getStoredValue(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storeValue(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Rendering remains functional if local storage is unavailable.
+  }
+}
+
+function removeStoredValue(key: string): void {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Ignore unavailable local storage.
   }
 }
 
 function persistTextureParameters(): void {
-  try {
-    localStorage.setItem(TEXTURE_SHADER_STORAGE_KEY, JSON.stringify(textureShader.getParameters()));
-  } catch {
-    // Rendering remains functional if local storage is unavailable.
-  }
+  storeValue(TEXTURE_SHADER_STORAGE_KEY, JSON.stringify(textureShader.getParameters()));
+}
+
+function persistLightingParameters(): void {
+  if (LOCK_LIGHTING_PARAMETERS) return;
+  storeValue(GLOBAL_LIGHTING_STORAGE_KEY, JSON.stringify(textureShader.getLightingParameters()));
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -160,18 +337,18 @@ function migrateLegacyTextureParameters(parsed: unknown, waterOnly: boolean): Te
 }
 
 function restoreTextureParameters(): void {
-  const stored = localStorage.getItem(TEXTURE_SHADER_STORAGE_KEY);
+  const stored = getStoredValue(TEXTURE_SHADER_STORAGE_KEY);
   if (stored) {
     try {
       textureShader.setParameters(JSON.parse(stored) as Partial<TextureShaderParameters>);
       return;
     } catch {
-      localStorage.removeItem(TEXTURE_SHADER_STORAGE_KEY);
+      removeStoredValue(TEXTURE_SHADER_STORAGE_KEY);
     }
   }
 
   for (const legacyKey of [LEGACY_TEXTURE_SHADER_STORAGE_KEY, LEGACY_WATER_SHADER_STORAGE_KEY]) {
-    const legacyStored = localStorage.getItem(legacyKey);
+    const legacyStored = getStoredValue(legacyKey);
     if (!legacyStored) continue;
     try {
       const migrated = migrateLegacyTextureParameters(
@@ -182,27 +359,35 @@ function restoreTextureParameters(): void {
         textureShader.setParameters(migrated);
         persistTextureParameters();
       }
-      localStorage.removeItem(legacyKey);
+      removeStoredValue(legacyKey);
       return;
     } catch {
-      localStorage.removeItem(legacyKey);
+      removeStoredValue(legacyKey);
     }
   }
 }
 
-function setRenderMode(
-  mode: "canvas" | "enhanced" | "fallback",
-  detail = "",
-): void {
+function restoreLightingParameters(): void {
+  if (LOCK_LIGHTING_PARAMETERS) return;
+  const stored = getStoredValue(GLOBAL_LIGHTING_STORAGE_KEY);
+  if (!stored) return;
+  try {
+    textureShader.setLightingParameters(JSON.parse(stored) as Partial<GlobalLightingParameters>);
+  } catch {
+    removeStoredValue(GLOBAL_LIGHTING_STORAGE_KEY);
+  }
+}
+
+function setRenderMode(mode: "canvas" | "enhanced" | "fallback", detail = ""): void {
   document.documentElement.dataset.renderMode = mode;
   renderModeElement.dataset.mode = mode;
   renderModeElement.title = detail;
   if (mode === "enhanced") {
-    renderModeElement.textContent = "渲染 WebGL2 动态纹理 + Canvas2D 底层";
+    renderModeElement.textContent = "WebGL2 + Lighting";
   } else if (mode === "fallback") {
-    renderModeElement.textContent = "渲染 Canvas2D（GPU 已降级）";
+    renderModeElement.textContent = "Canvas2D · fallback";
   } else {
-    renderModeElement.textContent = "渲染 Canvas2D";
+    renderModeElement.textContent = "Canvas2D";
   }
 }
 
@@ -214,6 +399,8 @@ function lockShaderToFallback(message: string): void {
   textureShaderToggle.title = message;
   textureParameterFields.disabled = true;
   textureParameterReset.disabled = true;
+  lightingParameterFields.disabled = true;
+  lightingParameterReset.disabled = true;
   setRenderMode("fallback", message);
 }
 
@@ -230,6 +417,8 @@ function setTextureShaderEnabled(enabled: boolean): void {
     textureShaderToggle.title = "自动化测试强制使用 Canvas2D 基线渲染。";
     textureParameterFields.disabled = true;
     textureParameterReset.disabled = true;
+    lightingParameterFields.disabled = true;
+    lightingParameterReset.disabled = true;
     setRenderMode("canvas", "通过 ?shader=off 强制关闭 WebGL2。Canvas2D 绘制完整静态纹理。");
     return;
   }
@@ -246,35 +435,73 @@ function setTextureShaderEnabled(enabled: boolean): void {
   textureShader.setEnabled(active);
   textureParameterFields.disabled = false;
   textureParameterReset.disabled = false;
+  lightingParameterFields.disabled = LOCK_LIGHTING_PARAMETERS;
+  lightingParameterReset.disabled = LOCK_LIGHTING_PARAMETERS;
 
   if (active) {
     setRenderMode(
       "enhanced",
-      "WebGL2 负责完整动态纹理；Canvas2D 保留地形底层。GPU 故障时立即切换为完整 Canvas2D 静态纹理。",
+      "WebGL2 负责动态纹理、全局曝光与世界空间云影；GPU 故障时立即切换为完整 Canvas2D 静态纹理。",
     );
   } else {
-    setRenderMode("canvas", "WebGL2 动态纹理已关闭；Canvas2D 绘制完整静态纹理。");
+    setRenderMode("canvas", "WebGL2 动态纹理与光照已关闭；Canvas2D 绘制完整静态纹理。");
   }
+}
+
+function applyTextureControl(control: TextureControlDefinition, value: number): void {
+  if (!Number.isFinite(value)) {
+    syncTextureParameterControls();
+    return;
+  }
+  textureShader.setSlotParameters(control.slot, { [control.key]: value });
+  const actual = textureShader.getSlotParameters(control.slot)[control.key];
+  syncNumericPair(control.range, control.number, actual, control.decimals);
+  persistTextureParameters();
+}
+
+function applyLightingControl(control: LightingControlDefinition, value: number): void {
+  if (!Number.isFinite(value)) {
+    syncLightingParameterControls();
+    return;
+  }
+  textureShader.setLightingParameters({ [control.key]: value });
+  const actual = textureShader.getLightingParameters()[control.key];
+  syncNumericPair(control.range, control.number, actual, control.decimals);
+  persistLightingParameters();
 }
 
 textureShader.setFailureHandler(handleTextureShaderFailure);
 restoreTextureParameters();
+restoreLightingParameters();
 syncTextureParameterControls();
+syncLightingParameterControls();
 
 for (const control of textureControls) {
-  control.input.addEventListener("input", () => {
-    const value = Number(control.input.value);
-    textureShader.setSlotParameters(control.slot, { [control.key]: value });
-    const actual = textureShader.getSlotParameters(control.slot)[control.key];
-    control.output.textContent = `${actual.toFixed(control.decimals)}${control.suffix}`;
-    persistTextureParameters();
+  control.range.addEventListener("input", () => applyTextureControl(control, Number(control.range.value)));
+  control.number.addEventListener("change", () => applyTextureControl(control, Number(control.number.value)));
+  control.number.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") control.number.blur();
+  });
+}
+
+for (const control of lightingControls) {
+  control.range.addEventListener("input", () => applyLightingControl(control, Number(control.range.value)));
+  control.number.addEventListener("change", () => applyLightingControl(control, Number(control.number.value)));
+  control.number.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") control.number.blur();
   });
 }
 
 textureParameterReset.addEventListener("click", () => {
   textureShader.resetParameters();
-  localStorage.removeItem(TEXTURE_SHADER_STORAGE_KEY);
+  removeStoredValue(TEXTURE_SHADER_STORAGE_KEY);
   syncTextureParameterControls();
+});
+
+lightingParameterReset.addEventListener("click", () => {
+  textureShader.resetLightingParameters();
+  removeStoredValue(GLOBAL_LIGHTING_STORAGE_KEY);
+  syncLightingParameterControls();
 });
 
 setTextureShaderEnabled(textureShaderToggle.checked);
@@ -354,6 +581,71 @@ function syncZoomPresetButtons(): void {
   }
 }
 
+function setDebugPanelCollapsed(collapsed: boolean): void {
+  hud.classList.toggle("is-collapsed", collapsed);
+  debugPanelCollapse.setAttribute("aria-expanded", String(!collapsed));
+  debugPanelCollapse.textContent = collapsed ? "+" : "−";
+  debugPanelCollapse.title = collapsed ? "展开 Debug 面板" : "收起 Debug 面板";
+  storeValue(DEBUG_PANEL_STORAGE_KEY, collapsed ? "1" : "0");
+}
+
+function restoreDebugPanelState(): void {
+  setDebugPanelCollapsed(getStoredValue(DEBUG_PANEL_STORAGE_KEY) === "1");
+}
+
+function buildDebugExportPayload(): object {
+  const textureParameters = textureShader.getParameters();
+  return {
+    schema: DEBUG_EXPORT_SCHEMA,
+    exportedAt: new Date().toISOString(),
+    source: {
+      page: window.location.origin + window.location.pathname,
+      waterVisualBaseline: WATER_VISUAL_BASELINE_VERSION,
+      lightingStage: textureCanvas.dataset.lightingStage ?? "unknown",
+    },
+    world: {
+      seed: seedInput.value.trim(),
+    },
+    view: {
+      cameraX: camera.x,
+      cameraY: camera.y,
+      zoom: camera.zoom,
+      gridVisible: renderer.isGridVisible(),
+      baseColorVisible: renderer.isBaseColorVisible(),
+      textureShaderEnabled: textureShader.isEnabled(),
+    },
+    textureShader: {
+      slots: TEXTURE_SLOT_NAMES.map((name, slot) => ({
+        slot,
+        name,
+        ...(textureParameters.slots[slot] ?? {}),
+      })),
+    },
+    globalLighting: textureShader.getLightingParameters(),
+  };
+}
+
+function exportDebugParameters(): void {
+  try {
+    const json = `${JSON.stringify(buildDebugExportPayload(), null, 2)}\n`;
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    anchor.href = url;
+    anchor.download = `baiyue-rpg-debug-params-${timestamp}.json`;
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    debugExportStatus.dataset.state = "ok";
+    debugExportStatus.textContent = "JSON 已导出";
+  } catch (error) {
+    debugExportStatus.dataset.state = "error";
+    debugExportStatus.textContent = `导出失败：${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
 for (const button of zoomPresetButtons) {
   button.addEventListener("click", () => {
     const zoom = Number(button.dataset.zoom);
@@ -361,7 +653,12 @@ for (const button of zoomPresetButtons) {
   });
 }
 syncZoomPresetButtons();
+restoreDebugPanelState();
 
+debugPanelCollapse.addEventListener("click", () => {
+  setDebugPanelCollapsed(!hud.classList.contains("is-collapsed"));
+});
+debugExportButton.addEventListener("click", exportDebugParameters);
 applySeedButton.addEventListener("click", applySeed);
 seedInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") applySeed();
@@ -378,6 +675,11 @@ textureShaderToggle.addEventListener("change", () => {
 window.addEventListener("keydown", (event) => {
   if (event.repeat) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement) return;
+
+  if (event.code === "Backquote") {
+    setDebugPanelCollapsed(!hud.classList.contains("is-collapsed"));
+    return;
+  }
 
   if (event.code === "KeyG") {
     setGridVisible(!renderer.isGridVisible());
@@ -419,10 +721,10 @@ function frame(now: number): void {
   statusElement.textContent = status.error
     ? `错误: ${status.error}`
     : status.ready
-      ? `WASM v${status.generatorVersion ?? "?"} · 1 macro = ${chunkManager.chunkSize}×${chunkManager.chunkSize} tiles`
+      ? `WASM v${status.generatorVersion ?? "?"} · ${chunkManager.chunkSize}² macro`
       : "WASM 初始化中";
   positionElement.textContent = `tile ${centerTileX.toLocaleString()}, ${centerTileY.toLocaleString()} · macro ${macroX}, ${macroY} · ${biomeName}`;
-  chunksElement.textContent = `${chunkManager.loadedCount} macro regions`;
+  chunksElement.textContent = `${chunkManager.loadedCount} regions`;
   zoomElement.textContent = `${Math.round(camera.zoom * 100)}%`;
   syncZoomPresetButtons();
 
