@@ -357,17 +357,18 @@ for (const button of document.querySelectorAll<HTMLButtonElement>("[data-preset]
 
 syncOutputs();
 
-const gl = canvas.getContext("webgl2", {
+const maybeGl = canvas.getContext("webgl2", {
   alpha: false,
   antialias: false,
   premultipliedAlpha: false,
   powerPreference: "default",
 });
 
-if (!gl) {
+if (!maybeGl) {
   document.documentElement.dataset.labStatus = "unavailable";
   statusElement.textContent = "无法创建 WebGL2。这个实验页需要 WebGL2 才能运行；主地图不受影响。";
 } else {
+  const gl = maybeGl;
   try {
     const program = createProgram(gl);
     const vao = gl.createVertexArray();
