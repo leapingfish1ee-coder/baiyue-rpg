@@ -104,12 +104,50 @@ float hash12(vec2 p) {
 float valueNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
+  // Quintic interpolation keeps first and second derivatives smooth at lattice edges.
+  f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   float a = hash12(i);
   float b = hash12(i + vec2(1.0, 0.0));
   float c = hash12(i + vec2(0.0, 1.0));
   float d = hash12(i + vec2(1.0, 1.0));
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+vec2 rotateA(vec2 p) {
+  return vec2(
+    p.x * 0.932327 - p.y * 0.361615,
+    p.x * 0.361615 + p.y * 0.932327
+  );
+}
+
+vec2 rotateB(vec2 p) {
+  return vec2(
+    p.x * 0.758362 + p.y * 0.651834,
+   -p.x * 0.651834 + p.y * 0.758362
+  );
+}
+
+vec2 rotateC(vec2 p) {
+  return vec2(
+    p.x * 0.453596 - p.y * 0.891207,
+    p.x * 0.891207 + p.y * 0.453596
+  );
+}
+
+float waterColorNoise(vec2 p, float timeValue) {
+  vec2 flow = vec2(timeValue, -timeValue * 0.35);
+
+  float octave1 = valueNoise(
+    rotateA(p + flow) + vec2(13.71, -8.43)
+  );
+  float octave2 = valueNoise(
+    rotateB(p * 2.03 + flow * 1.17) + vec2(-19.27, 31.61)
+  );
+  float octave3 = valueNoise(
+    rotateC(p * 4.11 + flow * 0.83) + vec2(47.13, 11.89)
+  );
+
+  return octave1 * 0.56 + octave2 * 0.29 + octave3 * 0.15;
 }
 
 void main() {
@@ -125,8 +163,9 @@ void main() {
     ? texelFetch(u_deepTexture, localTexel, 0)
     : texelFetch(u_shallowTexture, localTexel, 0);
 
-  float colorNoise = valueNoise(
-    worldTexel * u_colorFrequency + vec2(u_time * speed, -u_time * speed * 0.35)
+  float colorNoise = waterColorNoise(
+    worldTexel * u_colorFrequency,
+    u_time * speed
   );
   float brightness = 1.0 + (colorNoise * 2.0 - 1.0) * colorStrength;
 
