@@ -85,7 +85,6 @@ export class Renderer {
   private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
   private baseColorVisible = true;
-  private textureShaderEnabled = false;
   private textureRevision = 0;
 
   constructor() {
@@ -109,16 +108,6 @@ export class Renderer {
 
   isBaseColorVisible(): boolean {
     return this.baseColorVisible;
-  }
-
-  setTextureShaderEnabled(enabled: boolean): void {
-    if (this.textureShaderEnabled === enabled) return;
-    this.textureShaderEnabled = enabled;
-    this.clear();
-  }
-
-  isTextureShaderEnabled(): boolean {
-    return this.textureShaderEnabled;
   }
 
   setTerrainMasks(masks: readonly CanvasImageSource[]): void {
@@ -311,10 +300,12 @@ export class Renderer {
         context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       }
 
+      // Canvas2D is the authoritative rendering baseline. Optional GPU effects
+      // may enhance these pixels, but must never replace or suppress them.
       const baseSprite = this.terrainSprites[baseTerrainId];
-      if (!this.textureShaderEnabled && baseSprite) context.drawImage(baseSprite, tileX, tileY);
+      if (baseSprite) context.drawImage(baseSprite, tileX, tileY);
 
-      if (decorationId > 0 && !this.textureShaderEnabled) {
+      if (decorationId > 0) {
         const decorationSpriteIndex = BASE_TERRAIN_COUNT + decorationId - 1;
         const decorationSprite = this.terrainSprites[decorationSpriteIndex];
         if (decorationSprite) context.drawImage(decorationSprite, tileX, tileY);
