@@ -43,7 +43,7 @@ test("Canvas2D remains fully usable when WebGL2 cannot be created", async ({ pag
     };
   });
 
-  await page.goto("/");
+  await page.goto("./");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "fallback");
   await expect(page.locator("#texture-shader-toggle")).toBeDisabled();
   await expect(page.locator("#render-mode")).toContainText("Canvas2D");
@@ -55,7 +55,7 @@ test("losing a live WebGL2 context degrades to Canvas2D without losing the world
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
-  await page.goto("/");
+  await page.goto("./");
   await waitForWorld(page);
 
   const mode = await page.locator("html").getAttribute("data-render-mode");
