@@ -1,9 +1,5 @@
 import { expect, test } from "@playwright/test";
 
-async function readDownloadText(download: Awaited<ReturnType<Parameters<typeof test>[1]>>): Promise<string> {
-  return String(download);
-}
-
 test("debug panel exposes compact exact controls, persists tuning, and exports a submission-ready JSON", async ({ page }) => {
   await page.goto("./?shaderTime=10");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced", { timeout: 30_000 });
@@ -43,9 +39,18 @@ test("debug panel exposes compact exact controls, persists tuning, and exports a
 
   const stream = await download.createReadStream();
   if (!stream) throw new Error("Debug parameter download stream is unavailable.");
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  const exported = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+  }
+  const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
+  const bytes = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const exported = JSON.parse(new TextDecoder().decode(bytes)) as {
     schema: string;
     source: { waterVisualBaseline: string };
     textureShader: { slots: Array<{ slot: number; name: string; speed: number }> };
