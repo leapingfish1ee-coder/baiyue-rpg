@@ -3,9 +3,10 @@ import { Camera } from "./camera";
 import { ChunkManager } from "./chunk-manager";
 import { Renderer, TERRAIN_NAMES } from "./renderer";
 import { TextureTool } from "./texture-tool";
-import { WaterShaderRenderer, type WaterShaderParameters } from "./water-shader";
+import { TextureShaderRenderer, type TextureShaderParameters } from "./texture-shader";
 
-const WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
+const TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v1";
+const LEGACY_WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
 const ZOOM_PRESETS = [0.5, 1, 2, 4] as const;
 
 function requireElement<T extends Element>(selector: string): T {
@@ -15,14 +16,14 @@ function requireElement<T extends Element>(selector: string): T {
 }
 
 const canvas = requireElement<HTMLCanvasElement>("#world");
-const waterCanvas = requireElement<HTMLCanvasElement>("#water-effects");
+const textureCanvas = requireElement<HTMLCanvasElement>("#texture-effects");
 const seedInput = requireElement<HTMLInputElement>("#seed");
 const applySeedButton = requireElement<HTMLButtonElement>("#apply-seed");
 const gridToggle = requireElement<HTMLInputElement>("#grid-toggle");
 const baseColorToggle = requireElement<HTMLInputElement>("#base-color-toggle");
-const waterShaderToggle = requireElement<HTMLInputElement>("#water-shader-toggle");
-const waterParameterFields = requireElement<HTMLFieldSetElement>("#water-parameter-fields");
-const waterParameterReset = requireElement<HTMLButtonElement>("#water-parameter-reset");
+const textureShaderToggle = requireElement<HTMLInputElement>("#texture-shader-toggle");
+const textureParameterFields = requireElement<HTMLFieldSetElement>("#texture-parameter-fields");
+const textureParameterReset = requireElement<HTMLButtonElement>("#texture-parameter-reset");
 const zoomPresetButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-zoom]"));
 const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
@@ -36,118 +37,152 @@ const context: CanvasRenderingContext2D = maybeContext;
 const camera = new Camera(canvas);
 const chunkManager = new ChunkManager();
 const renderer = new Renderer();
-const waterShader = new WaterShaderRenderer(waterCanvas);
+const textureShader = new TextureShaderRenderer(textureCanvas);
 renderer.setGridVisible(gridToggle.checked);
 renderer.setBaseColorVisible(baseColorToggle.checked);
 
-type WaterControlDefinition = {
-  key: keyof WaterShaderParameters;
+type TextureControlDefinition = {
+  key: keyof TextureShaderParameters;
   input: HTMLInputElement;
   output: HTMLOutputElement;
   decimals: number;
   suffix: string;
 };
 
-const waterControls: WaterControlDefinition[] = [
+const textureControls: TextureControlDefinition[] = [
   {
     key: "deepSpeed",
-    input: requireElement<HTMLInputElement>("#water-deep-speed"),
-    output: requireElement<HTMLOutputElement>("#water-deep-speed-value"),
+    input: requireElement<HTMLInputElement>("#texture-deep-speed"),
+    output: requireElement<HTMLOutputElement>("#texture-deep-speed-value"),
     decimals: 2,
     suffix: "×",
   },
   {
     key: "deepColorStrength",
-    input: requireElement<HTMLInputElement>("#water-deep-color"),
-    output: requireElement<HTMLOutputElement>("#water-deep-color-value"),
+    input: requireElement<HTMLInputElement>("#texture-deep-color"),
+    output: requireElement<HTMLOutputElement>("#texture-deep-color-value"),
     decimals: 2,
     suffix: "",
   },
   {
     key: "shallowSpeed",
-    input: requireElement<HTMLInputElement>("#water-shallow-speed"),
-    output: requireElement<HTMLOutputElement>("#water-shallow-speed-value"),
+    input: requireElement<HTMLInputElement>("#texture-shallow-speed"),
+    output: requireElement<HTMLOutputElement>("#texture-shallow-speed-value"),
     decimals: 2,
     suffix: "×",
   },
   {
     key: "shallowColorStrength",
-    input: requireElement<HTMLInputElement>("#water-shallow-color"),
-    output: requireElement<HTMLOutputElement>("#water-shallow-color-value"),
+    input: requireElement<HTMLInputElement>("#texture-shallow-color"),
+    output: requireElement<HTMLOutputElement>("#texture-shallow-color-value"),
+    decimals: 2,
+    suffix: "",
+  },
+  {
+    key: "surfaceSpeed",
+    input: requireElement<HTMLInputElement>("#texture-surface-speed"),
+    output: requireElement<HTMLOutputElement>("#texture-surface-speed-value"),
+    decimals: 2,
+    suffix: "×",
+  },
+  {
+    key: "surfaceColorStrength",
+    input: requireElement<HTMLInputElement>("#texture-surface-color"),
+    output: requireElement<HTMLOutputElement>("#texture-surface-color-value"),
+    decimals: 2,
+    suffix: "",
+  },
+  {
+    key: "decorationSpeed",
+    input: requireElement<HTMLInputElement>("#texture-decoration-speed"),
+    output: requireElement<HTMLOutputElement>("#texture-decoration-speed-value"),
+    decimals: 2,
+    suffix: "×",
+  },
+  {
+    key: "decorationColorStrength",
+    input: requireElement<HTMLInputElement>("#texture-decoration-color"),
+    output: requireElement<HTMLOutputElement>("#texture-decoration-color-value"),
     decimals: 2,
     suffix: "",
   },
   {
     key: "colorFrequency",
-    input: requireElement<HTMLInputElement>("#water-color-frequency"),
-    output: requireElement<HTMLOutputElement>("#water-color-frequency-value"),
+    input: requireElement<HTMLInputElement>("#texture-color-frequency"),
+    output: requireElement<HTMLOutputElement>("#texture-color-frequency-value"),
     decimals: 3,
     suffix: "",
   },
 ];
 
-function syncWaterParameterControls(): void {
-  const parameters = waterShader.getParameters();
-  for (const control of waterControls) {
+function syncTextureParameterControls(): void {
+  const parameters = textureShader.getParameters();
+  for (const control of textureControls) {
     const value = parameters[control.key];
     control.input.value = String(value);
     control.output.textContent = `${value.toFixed(control.decimals)}${control.suffix}`;
   }
 }
 
-function persistWaterParameters(): void {
+function persistTextureParameters(): void {
   try {
-    localStorage.setItem(WATER_SHADER_STORAGE_KEY, JSON.stringify(waterShader.getParameters()));
+    localStorage.setItem(TEXTURE_SHADER_STORAGE_KEY, JSON.stringify(textureShader.getParameters()));
   } catch {
     // Rendering remains functional if local storage is unavailable.
   }
 }
 
-function restoreWaterParameters(): void {
-  const stored = localStorage.getItem(WATER_SHADER_STORAGE_KEY);
+function restoreTextureParameters(): void {
+  let stored = localStorage.getItem(TEXTURE_SHADER_STORAGE_KEY);
+  if (!stored) {
+    stored = localStorage.getItem(LEGACY_WATER_SHADER_STORAGE_KEY);
+    if (stored) localStorage.removeItem(LEGACY_WATER_SHADER_STORAGE_KEY);
+  }
   if (!stored) return;
+
   try {
-    const parsed = JSON.parse(stored) as Partial<WaterShaderParameters>;
-    waterShader.setParameters(parsed);
+    const parsed = JSON.parse(stored) as Partial<TextureShaderParameters>;
+    textureShader.setParameters(parsed);
+    persistTextureParameters();
   } catch {
-    localStorage.removeItem(WATER_SHADER_STORAGE_KEY);
+    localStorage.removeItem(TEXTURE_SHADER_STORAGE_KEY);
   }
 }
 
-restoreWaterParameters();
-syncWaterParameterControls();
+restoreTextureParameters();
+syncTextureParameterControls();
 
-for (const control of waterControls) {
+for (const control of textureControls) {
   control.input.addEventListener("input", () => {
     const value = Number(control.input.value);
-    waterShader.setParameters({ [control.key]: value } as Partial<WaterShaderParameters>);
-    const actual = waterShader.getParameters()[control.key];
+    textureShader.setParameters({ [control.key]: value } as Partial<TextureShaderParameters>);
+    const actual = textureShader.getParameters()[control.key];
     control.output.textContent = `${actual.toFixed(control.decimals)}${control.suffix}`;
-    persistWaterParameters();
+    persistTextureParameters();
   });
 }
 
-waterParameterReset.addEventListener("click", () => {
-  waterShader.resetParameters();
-  localStorage.removeItem(WATER_SHADER_STORAGE_KEY);
-  syncWaterParameterControls();
+textureParameterReset.addEventListener("click", () => {
+  textureShader.resetParameters();
+  localStorage.removeItem(TEXTURE_SHADER_STORAGE_KEY);
+  syncTextureParameterControls();
 });
 
-function setWaterShaderEnabled(enabled: boolean): void {
-  const active = enabled && waterShader.available;
-  waterShaderToggle.checked = active;
-  renderer.setWaterShaderEnabled(active);
-  waterShader.setEnabled(active);
+function setTextureShaderEnabled(enabled: boolean): void {
+  const active = enabled && textureShader.available;
+  textureShaderToggle.checked = active;
+  renderer.setTextureShaderEnabled(active);
+  textureShader.setEnabled(active);
 }
 
-if (!waterShader.available) {
-  waterShaderToggle.checked = false;
-  waterShaderToggle.disabled = true;
-  waterShaderToggle.title = "当前浏览器不支持 WebGL2，已回退到静态水面纹理。";
-  waterParameterFields.disabled = true;
-  waterParameterReset.disabled = true;
+if (!textureShader.available) {
+  textureShaderToggle.checked = false;
+  textureShaderToggle.disabled = true;
+  textureShaderToggle.title = "当前浏览器不支持 WebGL2，已回退到静态纹理渲染。";
+  textureParameterFields.disabled = true;
+  textureParameterReset.disabled = true;
 }
-setWaterShaderEnabled(waterShaderToggle.checked);
+setTextureShaderEnabled(textureShaderToggle.checked);
 
 const textureTool = new TextureTool(renderer, {
   toggleButton: requireElement<HTMLButtonElement>("#texture-tool-toggle"),
@@ -175,7 +210,7 @@ function resize(): void {
     canvas.height = targetHeight;
   }
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
-  waterShader.resize(viewportWidth, viewportHeight, dpr);
+  textureShader.resize(viewportWidth, viewportHeight, dpr);
 }
 
 function parseSeed(value: string): bigint {
@@ -242,8 +277,8 @@ gridToggle.addEventListener("change", () => {
 baseColorToggle.addEventListener("change", () => {
   setBaseColorVisible(baseColorToggle.checked);
 });
-waterShaderToggle.addEventListener("change", () => {
-  setWaterShaderEnabled(waterShaderToggle.checked);
+textureShaderToggle.addEventListener("change", () => {
+  setTextureShaderEnabled(textureShaderToggle.checked);
 });
 window.addEventListener("keydown", (event) => {
   if (event.repeat) return;
@@ -276,7 +311,7 @@ function frame(now: number): void {
     renderer.tilePixels,
   );
   renderer.draw(context, viewportWidth, viewportHeight, camera, chunkManager);
-  waterShader.draw(now / 1000, camera, chunkManager, renderer);
+  textureShader.draw(now / 1000, camera, chunkManager, renderer);
 
   const centerTileX = Math.floor(camera.x / renderer.tilePixels);
   const centerTileY = Math.floor(camera.y / renderer.tilePixels);
