@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const rawBasePath = process.env.SMOKE_BASE_PATH ?? "/";
+const basePath = `/${rawBasePath.replace(/^\/+|\/+$/g, "")}/`.replace("//", "/");
+const serverOrigin = "http://127.0.0.1:4173";
+const serverUrl = `${serverOrigin}${basePath}`;
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 45_000,
@@ -8,7 +13,7 @@ export default defineConfig({
   retries: 1,
   reporter: "line",
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: serverUrl,
     trace: "retain-on-failure",
     ...devices["Desktop Chrome"],
     launchOptions: {
@@ -21,8 +26,8 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: "npm run serve:test",
-    url: "http://127.0.0.1:4173",
+    command: "npm run preview:test",
+    url: serverUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,
   },
