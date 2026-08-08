@@ -3,11 +3,16 @@ import { Camera } from "./camera";
 import { ChunkManager } from "./chunk-manager";
 import { Renderer, TERRAIN_NAMES } from "./renderer";
 import { TextureTool } from "./texture-tool";
-import { TextureShaderRenderer, type TextureShaderParameters } from "./texture-shader";
+import {
+  TextureShaderRenderer,
+  type TextureShaderFailure,
+  type TextureShaderParameters,
+} from "./texture-shader";
 
 const TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v1";
 const LEGACY_WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
 const ZOOM_PRESETS = [0.5, 1, 2, 4] as const;
+const FORCE_SHADER_OFF = new URLSearchParams(window.location.search).get("shader") === "off";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -29,6 +34,7 @@ const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
 const chunksElement = requireElement<HTMLElement>("#chunks");
 const zoomElement = requireElement<HTMLElement>("#zoom");
+const renderModeElement = requireElement<HTMLElement>("#render-mode");
 
 const maybeContext = canvas.getContext("2d");
 if (!maybeContext) throw new Error("Canvas 2D is unavailable.");
@@ -149,6 +155,68 @@ function restoreTextureParameters(): void {
   }
 }
 
+function setRenderMode(
+  mode: "canvas" | "enhanced" | "fallback",
+  detail = "",
+): void {
+  document.documentElement.dataset.renderMode = mode;
+  renderModeElement.dataset.mode = mode;
+  renderModeElement.title = detail;
+  if (mode === "enhanced") {
+    renderModeElement.textContent = "渲染 Canvas2D + WebGL2 增强";
+  } else if (mode === "fallback") {
+    renderModeElement.textContent = "渲染 Canvas2D（GPU 增强已降级）";
+  } else {
+    renderModeElement.textContent = "渲染 Canvas2D";
+  }
+}
+
+function lockShaderToFallback(message: string): void {
+  textureShader.setEnabled(false);
+  textureShaderToggle.checked = false;
+  textureShaderToggle.disabled = true;
+  textureShaderToggle.title = message;
+  textureParameterFields.disabled = true;
+  textureParameterReset.disabled = true;
+  setRenderMode("fallback", message);
+}
+
+function handleTextureShaderFailure(failure: TextureShaderFailure): void {
+  lockShaderToFallback(failure.message);
+}
+
+function setTextureShaderEnabled(enabled: boolean): void {
+  if (FORCE_SHADER_OFF) {
+    textureShader.setEnabled(false);
+    textureShaderToggle.checked = false;
+    textureShaderToggle.disabled = true;
+    textureShaderToggle.title = "自动化测试强制使用 Canvas2D 基线渲染。";
+    textureParameterFields.disabled = true;
+    textureParameterReset.disabled = true;
+    setRenderMode("canvas", "通过 ?shader=off 强制关闭 WebGL2 增强。静态纹理仍完整绘制。");
+    return;
+  }
+
+  const failure = textureShader.getFailure();
+  if (failure) {
+    lockShaderToFallback(failure.message);
+    return;
+  }
+
+  const active = enabled && textureShader.available;
+  textureShaderToggle.checked = active;
+  textureShader.setEnabled(active);
+  textureParameterFields.disabled = false;
+  textureParameterReset.disabled = false;
+
+  if (active) {
+    setRenderMode("enhanced", "Canvas2D 始终绘制完整纹理；WebGL2 仅叠加动态颜色效果。 ");
+  } else {
+    setRenderMode("canvas", "WebGL2 动态增强已关闭；Canvas2D 静态纹理保持完整。 ");
+  }
+}
+
+textureShader.setFailureHandler(handleTextureShaderFailure);
 restoreTextureParameters();
 syncTextureParameterControls();
 
@@ -168,20 +236,6 @@ textureParameterReset.addEventListener("click", () => {
   syncTextureParameterControls();
 });
 
-function setTextureShaderEnabled(enabled: boolean): void {
-  const active = enabled && textureShader.available;
-  textureShaderToggle.checked = active;
-  renderer.setTextureShaderEnabled(active);
-  textureShader.setEnabled(active);
-}
-
-if (!textureShader.available) {
-  textureShaderToggle.checked = false;
-  textureShaderToggle.disabled = true;
-  textureShaderToggle.title = "当前浏览器不支持 WebGL2，已回退到静态纹理渲染。";
-  textureParameterFields.disabled = true;
-  textureParameterReset.disabled = true;
-}
 setTextureShaderEnabled(textureShaderToggle.checked);
 
 const textureTool = new TextureTool(renderer, {
