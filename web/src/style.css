@@ -12,21 +12,32 @@ body { background: #000000; }
 button, input { font: inherit; }
 
 #app { position: relative; }
-#world {
+#world,
+#water-effects {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
+  image-rendering: pixelated;
+}
+#world {
+  z-index: 0;
   cursor: grab;
   touch-action: none;
-  image-rendering: pixelated;
   background: #000000;
 }
 #world.dragging { cursor: grabbing; }
+#water-effects {
+  z-index: 1;
+  pointer-events: none;
+  background: transparent;
+}
+#water-effects[hidden] { display: none; }
 
 #hud,
 #texture-tool {
+  z-index: 3;
   border: 1px solid rgba(255,255,255,.14);
   border-radius: 10px;
   background: rgba(12, 18, 24, .88);
@@ -45,7 +56,7 @@ button, input { font: inherit; }
 }
 
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.row > label:not(.grid-toggle) { font-size: 13px; opacity: .72; }
+.row > label:not(.hud-toggle) { font-size: 13px; opacity: .72; }
 input[type="text"], button {
   height: 32px;
   border-radius: 6px;
@@ -58,7 +69,7 @@ button { padding: 0 13px; cursor: pointer; }
 button:hover { background: #22303d; }
 button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-offset: 2px; }
 
-.grid-toggle {
+.hud-toggle {
   height: 32px;
   display: inline-flex;
   align-items: center;
@@ -70,7 +81,8 @@ button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-
   font-size: 12px;
   cursor: pointer;
 }
-.grid-toggle input { width: 15px; height: 15px; margin: 0; accent-color: #8fb8d8; }
+.hud-toggle input { width: 15px; height: 15px; margin: 0; accent-color: #8fb8d8; }
+.hud-toggle:has(input:disabled) { opacity: .5; cursor: not-allowed; }
 
 .stats {
   display: flex;

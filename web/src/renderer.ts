@@ -44,6 +44,8 @@ export class Renderer {
   private readonly defaultMasks: HTMLCanvasElement[];
   private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
+  private waterShaderEnabled = false;
+  private textureRevision = 0;
 
   constructor() {
     this.defaultMasks = this.createDefaultMasks();
@@ -58,18 +60,34 @@ export class Renderer {
     return this.gridVisible;
   }
 
+  setWaterShaderEnabled(enabled: boolean): void {
+    if (this.waterShaderEnabled === enabled) return;
+    this.waterShaderEnabled = enabled;
+    this.clear();
+  }
+
+  isWaterShaderEnabled(): boolean {
+    return this.waterShaderEnabled;
+  }
+
   setTerrainMasks(masks: readonly CanvasImageSource[]): void {
     this.terrainSprites = this.createTintedSprites(masks);
+    this.textureRevision += 1;
     this.clear();
   }
 
   resetTerrainTextures(): void {
     this.terrainSprites = this.createTintedSprites(this.defaultMasks);
+    this.textureRevision += 1;
     this.clear();
   }
 
   getTerrainSprites(): readonly HTMLCanvasElement[] {
     return this.terrainSprites;
+  }
+
+  getTextureRevision(): number {
+    return this.textureRevision;
   }
 
   clear(): void {
@@ -230,8 +248,9 @@ export class Renderer {
       context.fillStyle = `rgb(${baseColor[0]} ${baseColor[1]} ${baseColor[2]})`;
       context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
 
+      const shaderOwnsWaterTexture = this.waterShaderEnabled && (terrainId === 0 || terrainId === 1);
       const sprite = this.terrainSprites[terrainId];
-      if (sprite) context.drawImage(sprite, tileX, tileY);
+      if (!shaderOwnsWaterTexture && sprite) context.drawImage(sprite, tileX, tileY);
     }
 
     this.surfaces.set(chunk.key, canvas);

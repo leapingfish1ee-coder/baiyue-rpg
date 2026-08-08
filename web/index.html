@@ -9,14 +9,19 @@
   <body>
     <main id="app">
       <canvas id="world" aria-label="Infinite generated terrain"></canvas>
+      <canvas id="water-effects" hidden aria-hidden="true"></canvas>
       <section id="hud">
         <div class="row">
           <label for="seed">Seed</label>
           <input id="seed" type="text" value="20260808" spellcheck="false" />
           <button id="apply-seed" type="button">应用</button>
-          <label class="grid-toggle" for="grid-toggle">
+          <label class="hud-toggle" for="grid-toggle">
             <input id="grid-toggle" type="checkbox" checked />
             <span>网格</span>
+          </label>
+          <label class="hud-toggle" for="water-shader-toggle">
+            <input id="water-shader-toggle" type="checkbox" checked />
+            <span>水面 Shader</span>
           </label>
           <button id="texture-tool-toggle" type="button" aria-expanded="false" aria-controls="texture-tool">纹理工具</button>
         </div>
@@ -26,7 +31,7 @@
           <span id="chunks">0 chunks</span>
           <span id="zoom">100%</span>
         </div>
-        <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · G 切换网格 · 粗线为 MacroCell 边界</div>
+        <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · G 切换网格 · 深水/浅水使用 WebGL2 动态噪波与整数像素置换</div>
       </section>
 
       <aside id="texture-tool" hidden aria-label="Tile 纹理工具">

@@ -3,6 +3,7 @@ import { Camera } from "./camera";
 import { ChunkManager } from "./chunk-manager";
 import { Renderer, TERRAIN_NAMES } from "./renderer";
 import { TextureTool } from "./texture-tool";
+import { WaterShaderRenderer } from "./water-shader";
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -11,9 +12,11 @@ function requireElement<T extends Element>(selector: string): T {
 }
 
 const canvas = requireElement<HTMLCanvasElement>("#world");
+const waterCanvas = requireElement<HTMLCanvasElement>("#water-effects");
 const seedInput = requireElement<HTMLInputElement>("#seed");
 const applySeedButton = requireElement<HTMLButtonElement>("#apply-seed");
 const gridToggle = requireElement<HTMLInputElement>("#grid-toggle");
+const waterShaderToggle = requireElement<HTMLInputElement>("#water-shader-toggle");
 const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
 const chunksElement = requireElement<HTMLElement>("#chunks");
@@ -26,7 +29,22 @@ const context: CanvasRenderingContext2D = maybeContext;
 const camera = new Camera(canvas);
 const chunkManager = new ChunkManager();
 const renderer = new Renderer();
+const waterShader = new WaterShaderRenderer(waterCanvas);
 renderer.setGridVisible(gridToggle.checked);
+
+function setWaterShaderEnabled(enabled: boolean): void {
+  const active = enabled && waterShader.available;
+  waterShaderToggle.checked = active;
+  renderer.setWaterShaderEnabled(active);
+  waterShader.setEnabled(active);
+}
+
+if (!waterShader.available) {
+  waterShaderToggle.checked = false;
+  waterShaderToggle.disabled = true;
+  waterShaderToggle.title = "当前浏览器不支持 WebGL2，已回退到静态水面纹理。";
+}
+setWaterShaderEnabled(waterShaderToggle.checked);
 
 const textureTool = new TextureTool(renderer, {
   toggleButton: requireElement<HTMLButtonElement>("#texture-tool-toggle"),
@@ -54,6 +72,7 @@ function resize(): void {
     canvas.height = targetHeight;
   }
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
+  waterShader.resize(viewportWidth, viewportHeight, dpr);
 }
 
 function parseSeed(value: string): bigint {
@@ -90,6 +109,9 @@ seedInput.addEventListener("keydown", (event) => {
 gridToggle.addEventListener("change", () => {
   setGridVisible(gridToggle.checked);
 });
+waterShaderToggle.addEventListener("change", () => {
+  setWaterShaderEnabled(waterShaderToggle.checked);
+});
 window.addEventListener("keydown", (event) => {
   if (event.repeat || event.code !== "KeyG") return;
   if (event.target instanceof HTMLInputElement) return;
@@ -113,6 +135,7 @@ function frame(now: number): void {
     renderer.tilePixels,
   );
   renderer.draw(context, viewportWidth, viewportHeight, camera, chunkManager);
+  waterShader.draw(now / 1000, camera, chunkManager, renderer);
 
   const centerTileX = Math.floor(camera.x / renderer.tilePixels);
   const centerTileY = Math.floor(camera.y / renderer.tilePixels);
