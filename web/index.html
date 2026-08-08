@@ -10,205 +10,98 @@
     <main id="app">
       <canvas id="world" aria-label="Infinite generated terrain"></canvas>
       <canvas id="texture-effects" hidden aria-hidden="true"></canvas>
-      <section id="hud">
-        <div class="row">
-          <label for="seed">Seed</label>
-          <input id="seed" type="text" value="20260808" spellcheck="false" />
-          <button id="apply-seed" type="button">应用</button>
-          <label class="hud-toggle" for="grid-toggle">
-            <input id="grid-toggle" type="checkbox" checked />
-            <span>网格</span>
-          </label>
-          <label class="hud-toggle" for="base-color-toggle">
-            <input id="base-color-toggle" type="checkbox" checked />
-            <span>底色</span>
-          </label>
-          <label class="hud-toggle" for="texture-shader-toggle">
-            <input id="texture-shader-toggle" type="checkbox" checked />
-            <span>GPU 动态纹理</span>
-          </label>
-          <button id="texture-tool-toggle" type="button" aria-expanded="false" aria-controls="texture-tool">纹理工具</button>
+
+      <section id="hud" class="debug-panel" aria-label="World debug controls">
+        <header class="debug-panel-head">
+          <div class="debug-title-block">
+            <div class="debug-kicker">BAIYUE RPG</div>
+            <div class="debug-title-row">
+              <strong>World Debug</strong>
+              <span id="render-mode" class="debug-mode-badge" data-mode="canvas">Canvas2D</span>
+            </div>
+          </div>
+          <div class="debug-head-actions">
+            <button id="debug-export" class="button-accent" type="button" title="导出当前 Seed、视图、纹理 Shader 与全局光照参数">导出 JSON</button>
+            <button id="debug-panel-collapse" class="button-icon" type="button" aria-expanded="true" aria-controls="debug-panel-body" title="收起 / 展开 Debug 面板">−</button>
+          </div>
+        </header>
+
+        <div id="debug-panel-body" class="debug-panel-body">
+          <div class="debug-primary-grid">
+            <label class="seed-control" for="seed">
+              <span>Seed</span>
+              <input id="seed" type="text" value="20260808" spellcheck="false" />
+            </label>
+            <button id="apply-seed" type="button">应用 Seed</button>
+          </div>
+
+          <div class="debug-toolbar" aria-label="渲染快捷开关">
+            <label class="hud-toggle" for="grid-toggle">
+              <input id="grid-toggle" type="checkbox" checked />
+              <span>网格</span>
+            </label>
+            <label class="hud-toggle" for="base-color-toggle">
+              <input id="base-color-toggle" type="checkbox" checked />
+              <span>底色</span>
+            </label>
+            <label class="hud-toggle" for="texture-shader-toggle">
+              <input id="texture-shader-toggle" type="checkbox" checked />
+              <span>GPU</span>
+            </label>
+            <button id="texture-tool-toggle" type="button" aria-expanded="false" aria-controls="texture-tool">纹理工具</button>
+            <a class="debug-link" href="./lighting-lab/" target="_blank" rel="noreferrer">Lighting Lab ↗</a>
+          </div>
+
+          <div class="debug-zoom-row">
+            <span class="debug-inline-label">Zoom</span>
+            <div class="zoom-presets" role="group" aria-label="缩放快捷级数">
+              <button type="button" data-zoom="0.5" title="快捷键 1">50%</button>
+              <button type="button" data-zoom="1" title="快捷键 2">100%</button>
+              <button type="button" data-zoom="2" title="快捷键 3">200%</button>
+              <button type="button" data-zoom="4" title="快捷键 4">400%</button>
+            </div>
+          </div>
+
+          <div class="stats debug-stats">
+            <span id="status">WASM 初始化中</span>
+            <span id="position">tile 0, 0</span>
+            <span id="chunks">0 chunks</span>
+            <span id="zoom">100%</span>
+          </div>
+
+          <details id="lighting-parameter-panel" class="debug-section" open>
+            <summary>
+              <span>全局光照 / 云影</span>
+              <span class="summary-meta">8 params</span>
+            </summary>
+            <fieldset id="lighting-parameter-fields" class="debug-fieldset">
+              <div id="lighting-parameter-grid" class="lighting-parameter-grid"></div>
+              <div class="debug-section-actions">
+                <span class="section-help">自动保存到本浏览器</span>
+                <button id="lighting-parameter-reset" type="button">恢复默认</button>
+              </div>
+            </fieldset>
+          </details>
+
+          <details id="texture-parameter-panel" class="debug-section">
+            <summary>
+              <span>纹理动态参数</span>
+              <span class="summary-meta">8 slots × 3</span>
+            </summary>
+            <fieldset id="texture-parameter-fields" class="debug-fieldset">
+              <div id="texture-parameter-table" class="texture-parameter-table"></div>
+              <div class="debug-section-actions">
+                <span class="section-help">速度 / 明暗 / 频率均独立</span>
+                <button id="texture-parameter-reset" type="button">恢复默认</button>
+              </div>
+            </fieldset>
+          </details>
+
+          <footer class="debug-footer">
+            <span>拖拽 / WASD · 滚轮 · 1–4 Zoom · G 网格 · ` 收起面板</span>
+            <span id="debug-export-status" class="debug-export-status" aria-live="polite">参数实时保存</span>
+          </footer>
         </div>
-        <div class="zoom-presets" role="group" aria-label="缩放快捷级数">
-          <span>缩放</span>
-          <button type="button" data-zoom="0.5" title="快捷键 1">50%</button>
-          <button type="button" data-zoom="1" title="快捷键 2">100%</button>
-          <button type="button" data-zoom="2" title="快捷键 3">200%</button>
-          <button type="button" data-zoom="4" title="快捷键 4">400%</button>
-        </div>
-        <div class="stats">
-          <span id="status">WASM 初始化中</span>
-          <span id="render-mode">渲染 Canvas2D</span>
-          <span id="position">tile 0, 0</span>
-          <span id="chunks">0 chunks</span>
-          <span id="zoom">100%</span>
-        </div>
-        <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · 1–4 快捷缩放 · G 切换网格 · 32px tile + 4px 间距</div>
-
-        <details id="texture-parameter-panel" class="shader-parameter-panel">
-          <summary>GPU 动态纹理参数</summary>
-          <fieldset id="texture-parameter-fields">
-            <div class="shader-parameter-group">
-              <strong>深水</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-0-speed" data-texture-slot="0" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.180" />
-                <output id="texture-slot-0-speed-value" for="texture-slot-0-speed">0.180×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-0-colorStrength" data-texture-slot="0" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.150" />
-                <output id="texture-slot-0-colorStrength-value" for="texture-slot-0-colorStrength">0.150</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-0-colorFrequency" data-texture-slot="0" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-0-colorFrequency-value" for="texture-slot-0-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>浅水</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-1-speed" data-texture-slot="1" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.300" />
-                <output id="texture-slot-1-speed-value" for="texture-slot-1-speed">0.300×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-1-colorStrength" data-texture-slot="1" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.220" />
-                <output id="texture-slot-1-colorStrength-value" for="texture-slot-1-colorStrength">0.220</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-1-colorFrequency" data-texture-slot="1" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-1-colorFrequency-value" for="texture-slot-1-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>沙地</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-2-speed" data-texture-slot="2" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.052" />
-                <output id="texture-slot-2-speed-value" for="texture-slot-2-speed">0.052×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-2-colorStrength" data-texture-slot="2" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.060" />
-                <output id="texture-slot-2-colorStrength-value" for="texture-slot-2-colorStrength">0.060</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-2-colorFrequency" data-texture-slot="2" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-2-colorFrequency-value" for="texture-slot-2-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>土地</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-3-speed" data-texture-slot="3" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.080" />
-                <output id="texture-slot-3-speed-value" for="texture-slot-3-speed">0.080×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-3-colorStrength" data-texture-slot="3" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.080" />
-                <output id="texture-slot-3-colorStrength-value" for="texture-slot-3-colorStrength">0.080</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-3-colorFrequency" data-texture-slot="3" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-3-colorFrequency-value" for="texture-slot-3-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>岩地</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-4-speed" data-texture-slot="4" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.020" />
-                <output id="texture-slot-4-speed-value" for="texture-slot-4-speed">0.020×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-4-colorStrength" data-texture-slot="4" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.036" />
-                <output id="texture-slot-4-colorStrength-value" for="texture-slot-4-colorStrength">0.036</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-4-colorFrequency" data-texture-slot="4" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-4-colorFrequency-value" for="texture-slot-4-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>雪地</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-5-speed" data-texture-slot="5" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.044" />
-                <output id="texture-slot-5-speed-value" for="texture-slot-5-speed">0.044×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-5-colorStrength" data-texture-slot="5" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.068" />
-                <output id="texture-slot-5-colorStrength-value" for="texture-slot-5-colorStrength">0.068</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-5-colorFrequency" data-texture-slot="5" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-5-colorFrequency-value" for="texture-slot-5-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>草地</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-6-speed" data-texture-slot="6" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.110" />
-                <output id="texture-slot-6-speed-value" for="texture-slot-6-speed">0.110×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-6-colorStrength" data-texture-slot="6" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.100" />
-                <output id="texture-slot-6-colorStrength-value" for="texture-slot-6-colorStrength">0.100</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-6-colorFrequency" data-texture-slot="6" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-6-colorFrequency-value" for="texture-slot-6-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group">
-              <strong>树林</strong>
-              <label>
-                <span>速度</span>
-                <input id="texture-slot-7-speed" data-texture-slot="7" data-texture-parameter="speed" type="range" min="0.001" max="2" step="0.001" value="0.075" />
-                <output id="texture-slot-7-speed-value" for="texture-slot-7-speed">0.075×</output>
-              </label>
-              <label>
-                <span>明暗强度</span>
-                <input id="texture-slot-7-colorStrength" data-texture-slot="7" data-texture-parameter="colorStrength" type="range" min="0" max="1" step="0.001" value="0.080" />
-                <output id="texture-slot-7-colorStrength-value" for="texture-slot-7-colorStrength">0.080</output>
-              </label>
-              <label>
-                <span>颜色频率</span>
-                <input id="texture-slot-7-colorFrequency" data-texture-slot="7" data-texture-parameter="colorFrequency" type="range" min="0.001" max="0.5" step="0.001" value="0.045" />
-                <output id="texture-slot-7-colorFrequency-value" for="texture-slot-7-colorFrequency">0.045</output>
-              </label>
-            </div>
-
-            <div class="shader-parameter-group shader-parameter-group-wide">
-              <strong>参数说明</strong>
-              <div class="shader-parameter-note">8 个纹理槽分别独立控制速度、明暗强度和颜色频率。范围统一扩大为：速度 0.001–2.000、明暗强度 0–1.000、颜色频率 0.001–0.500。GPU 模式下 WebGL2 负责完整动态纹理；水域继续锁定 b67 已验收视觉合成。WebGL2 初始化或运行失败时立即切换为完整 Canvas2D 静态纹理。</div>
-            </div>
-            <div class="shader-parameter-actions">
-              <button id="texture-parameter-reset" type="button">恢复默认参数</button>
-            </div>
-          </fieldset>
-        </details>
       </section>
 
       <aside id="texture-tool" hidden aria-label="Tile 纹理工具">
