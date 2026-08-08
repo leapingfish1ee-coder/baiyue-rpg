@@ -50,7 +50,7 @@ button, input { font: inherit; }
   top: 14px;
   left: 14px;
   min-width: 320px;
-  max-width: min(760px, calc(100vw - 28px));
+  max-width: calc(100vw - 28px);
   padding: 12px;
   user-select: none;
 }
@@ -67,8 +67,7 @@ input[type="text"], button {
 input[type="text"] { flex: 1; min-width: 150px; padding: 0 9px; font-variant-numeric: tabular-nums; }
 button { padding: 0 13px; cursor: pointer; }
 button:hover { background: #22303d; }
-button:disabled { opacity: .45; cursor: not-allowed; }
-button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid #9ec7e7; outline-offset: 2px; }
+button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-offset: 2px; }
 
 .hud-toggle {
   height: 32px;
@@ -98,59 +97,59 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 
 .shader-parameter-panel {
   margin-top: 9px;
-  border-top: 1px solid rgba(255,255,255,.09);
   padding-top: 8px;
+  border-top: 1px solid rgba(255,255,255,.08);
 }
 .shader-parameter-panel summary {
-  width: max-content;
   cursor: pointer;
-  color: rgba(232,237,242,.78);
   font-size: 12px;
+  color: rgba(232,237,242,.72);
 }
-#water-parameter-fields {
+.shader-parameter-panel fieldset {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 14px;
+  gap: 10px;
   margin: 9px 0 0;
   padding: 0;
   border: 0;
 }
-#water-parameter-fields:disabled { opacity: .48; }
 .shader-parameter-group {
-  display: grid;
-  gap: 6px;
   min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(255,255,255,.09);
+  border-radius: 7px;
+  background: rgba(255,255,255,.025);
 }
-.shader-parameter-group > strong {
+.shader-parameter-group-wide { grid-column: 1 / -1; }
+.shader-parameter-group strong {
+  display: block;
+  margin-bottom: 7px;
   font-size: 11px;
   font-weight: 600;
-  color: rgba(232,237,242,.7);
+  color: rgba(232,237,242,.78);
 }
 .shader-parameter-group label {
   display: grid;
-  grid-template-columns: 70px minmax(90px, 1fr) 66px;
+  grid-template-columns: 72px minmax(100px, 1fr) 58px;
+  gap: 7px;
   align-items: center;
-  gap: 8px;
+  margin-top: 6px;
   font-size: 10px;
-  color: rgba(232,237,242,.66);
+  color: rgba(232,237,242,.62);
 }
-.shader-parameter-group input[type="range"] {
-  width: 100%;
-  min-width: 0;
-  accent-color: #8fb8d8;
-}
+.shader-parameter-group input[type="range"] { width: 100%; min-width: 0; }
 .shader-parameter-group output {
   text-align: right;
   font-variant-numeric: tabular-nums;
-  color: rgba(232,237,242,.86);
+  color: rgba(232,237,242,.78);
 }
-.shader-parameter-group-wide { grid-column: 1 / -1; }
 .shader-parameter-actions {
   grid-column: 1 / -1;
   display: flex;
   justify-content: flex-end;
 }
 .shader-parameter-actions button { height: 28px; font-size: 11px; }
+.shader-parameter-panel fieldset:disabled { opacity: .45; }
 
 #texture-tool {
   position: absolute;
@@ -241,11 +240,11 @@ button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px 
 .texture-status[data-state="error"] { color: #ffb4b4; }
 
 @media (max-width: 760px) {
-  #hud { right: 14px; min-width: 0; max-height: calc(100vh - 28px); overflow: auto; }
-  #water-parameter-fields { grid-template-columns: 1fr; }
+  #hud { right: 14px; min-width: 0; }
+  .shader-parameter-panel fieldset { grid-template-columns: 1fr; }
   .shader-parameter-group-wide { grid-column: auto; }
   .shader-parameter-actions { grid-column: auto; }
-  .shader-parameter-group label { grid-template-columns: 68px minmax(70px, 1fr) 62px; }
+  .shader-parameter-group label { grid-template-columns: 68px minmax(80px, 1fr) 56px; }
   #texture-tool {
     top: auto;
     right: 14px;
