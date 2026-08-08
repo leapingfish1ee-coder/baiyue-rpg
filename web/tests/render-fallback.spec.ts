@@ -166,3 +166,33 @@ test("WebGL2 shader initializes, then context loss restores complete Canvas2D te
   await waitForWorld(page);
   expect(pageErrors).toEqual([]);
 });
+
+test("lighting lab compiles its WebGL2 stage and exposes interactive cloud presets", async ({ page }) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+
+  await page.goto("./lighting-lab/");
+  await expect(page.locator("html")).toHaveAttribute("data-lab-status", "ready", { timeout: 15_000 });
+  await expect(page.locator("#lab-status")).toContainText("WebGL2 Lighting Stage");
+  await expect(page.locator("#lighting-canvas")).toBeVisible();
+  await expect(page.locator("#compare")).toBeChecked();
+  await expect(page.locator("#animate")).toBeChecked();
+  await expect(page.locator("#lab-controls input[type=range]")).toHaveCount(8);
+
+  await page.locator('[data-preset="dramatic"]').click();
+  await expect(page.locator("#exposure")).toHaveValue("1.25");
+  await expect(page.locator("#cloud-density")).toHaveValue("0.78");
+  await expect(page.locator("#shadow-strength")).toHaveValue("0.72");
+
+  await page.locator('[data-preset="clear"]').click();
+  await expect(page.locator("#exposure")).toHaveValue("0.45");
+  await expect(page.locator("#cloud-density")).toHaveValue("0.15");
+
+  const glError = await page.evaluate(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#lighting-canvas");
+    const gl = canvas?.getContext("webgl2");
+    return gl?.getError() ?? -1;
+  });
+  expect(glError).toBe(0);
+  expect(pageErrors).toEqual([]);
+});
