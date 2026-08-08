@@ -1,7 +1,6 @@
 import type { Camera } from "./camera";
 import type { ChunkManager } from "./chunk-manager";
 import {
-  SOURCE_TILE_PIXELS,
   TERRAIN_BASE_COLORS,
   TERRAIN_COLORS,
   type Renderer,
@@ -12,9 +11,6 @@ export interface WaterShaderParameters {
   shallowSpeed: number;
   deepColorStrength: number;
   shallowColorStrength: number;
-  deepDisplacement: number;
-  shallowDisplacement: number;
-  displacementFrequency: number;
   colorFrequency: number;
 }
 
@@ -23,9 +19,6 @@ export const DEFAULT_WATER_SHADER_PARAMETERS: Readonly<WaterShaderParameters> = 
   shallowSpeed: 0.30,
   deepColorStrength: 0.15,
   shallowColorStrength: 0.22,
-  deepDisplacement: 1,
-  shallowDisplacement: 1,
-  displacementFrequency: 0.14,
   colorFrequency: 0.045,
 });
 
@@ -34,9 +27,6 @@ const PARAMETER_LIMITS: Record<keyof WaterShaderParameters, readonly [number, nu
   shallowSpeed: [0.02, 1.0],
   deepColorStrength: [0, 0.6],
   shallowColorStrength: [0, 0.6],
-  deepDisplacement: [0, 2],
-  shallowDisplacement: [0, 2],
-  displacementFrequency: [0.03, 0.4],
   colorFrequency: [0.005, 0.15],
 };
 
@@ -99,9 +89,6 @@ uniform float u_deepSpeed;
 uniform float u_shallowSpeed;
 uniform float u_deepColorStrength;
 uniform float u_shallowColorStrength;
-uniform float u_deepDisplacement;
-uniform float u_shallowDisplacement;
-uniform float u_displacementFrequency;
 uniform float u_colorFrequency;
 
 out vec4 outColor;
@@ -125,37 +112,18 @@ float valueNoise(vec2 p) {
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-int wrapTexel(int value) {
-  return ((value % TILE_SIZE) + TILE_SIZE) % TILE_SIZE;
-}
-
 void main() {
   bool deep = v_terrain == 0;
   float speed = deep ? u_deepSpeed : u_shallowSpeed;
   float colorStrength = deep ? u_deepColorStrength : u_shallowColorStrength;
-  float displacementStrength = deep ? u_deepDisplacement : u_shallowDisplacement;
 
   vec2 localFloat = clamp(floor(v_uv * float(TILE_SIZE)), vec2(0.0), vec2(7.0));
   ivec2 localTexel = ivec2(localFloat);
   vec2 worldTexel = v_worldTile * float(TILE_SIZE) + localFloat;
 
-  float dxNoise = valueNoise(
-    worldTexel * u_displacementFrequency + vec2(u_time * speed * 2.2, 17.0)
-  );
-  float dyNoise = valueNoise(
-    worldTexel * (u_displacementFrequency * 0.79) + vec2(31.0, -u_time * speed * 1.6)
-  );
-  ivec2 displacement = ivec2(
-    round((vec2(dxNoise, dyNoise) * 2.0 - 1.0) * displacementStrength)
-  );
-  ivec2 sampleTexel = ivec2(
-    wrapTexel(localTexel.x + displacement.x),
-    wrapTexel(localTexel.y + displacement.y)
-  );
-
   vec4 textureSample = deep
-    ? texelFetch(u_deepTexture, sampleTexel, 0)
-    : texelFetch(u_shallowTexture, sampleTexel, 0);
+    ? texelFetch(u_deepTexture, localTexel, 0)
+    : texelFetch(u_shallowTexture, localTexel, 0);
 
   float colorNoise = valueNoise(
     worldTexel * u_colorFrequency + vec2(u_time * speed, -u_time * speed * 0.35)
@@ -278,8 +246,6 @@ export class WaterShaderRenderer {
       const [minimum, maximum] = PARAMETER_LIMITS[key];
       updated[key] = Math.min(maximum, Math.max(minimum, value));
     }
-    updated.deepDisplacement = Math.round(updated.deepDisplacement);
-    updated.shallowDisplacement = Math.round(updated.shallowDisplacement);
     this.parameters = updated;
   }
 
@@ -321,9 +287,6 @@ export class WaterShaderRenderer {
     gl.uniform1f(gl.getUniformLocation(program, "u_shallowSpeed"), this.parameters.shallowSpeed);
     gl.uniform1f(gl.getUniformLocation(program, "u_deepColorStrength"), this.parameters.deepColorStrength);
     gl.uniform1f(gl.getUniformLocation(program, "u_shallowColorStrength"), this.parameters.shallowColorStrength);
-    gl.uniform1f(gl.getUniformLocation(program, "u_deepDisplacement"), this.parameters.deepDisplacement);
-    gl.uniform1f(gl.getUniformLocation(program, "u_shallowDisplacement"), this.parameters.shallowDisplacement);
-    gl.uniform1f(gl.getUniformLocation(program, "u_displacementFrequency"), this.parameters.displacementFrequency);
     gl.uniform1f(gl.getUniformLocation(program, "u_colorFrequency"), this.parameters.colorFrequency);
 
     gl.bindVertexArray(this.vao);
