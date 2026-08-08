@@ -1,0 +1,7 @@
+/target
+/rust/target
+/web/node_modules
+/web/dist
+/web/public/wasm/*
+!/web/public/wasm/.gitkeep
+.DS_Store
