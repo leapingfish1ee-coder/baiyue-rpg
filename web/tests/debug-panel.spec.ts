@@ -14,6 +14,8 @@ test("debug panel exposes compact exact controls, persists tuning, and exports a
   await exposureNumber.press("Enter");
   await expect(page.locator("#lighting-exposure")).toHaveValue("1.15");
 
+  await page.locator("#texture-parameter-panel > summary").click();
+  await expect(page.locator("#texture-parameter-panel")).toHaveAttribute("open", "");
   const landSpeedNumber = page.locator("#texture-slot-3-speed-number");
   await landSpeedNumber.fill("0.123");
   await landSpeedNumber.press("Enter");
