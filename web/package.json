@@ -6,7 +6,7 @@
   "scripts": {
     "wasm:build": "wasm-pack build ../rust --target web --out-dir ../web/public/wasm --out-name terrain_wasm --release",
     "dev": "npm run wasm:build && vite",
-    "serve:test": "vite --host 127.0.0.1 --port 4173",
+    "preview:test": "vite preview --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
     "build": "npm run wasm:build && tsc --noEmit && vite build",
     "test:smoke": "playwright test"
