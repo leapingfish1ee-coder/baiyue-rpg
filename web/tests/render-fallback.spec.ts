@@ -51,32 +51,33 @@ test("Canvas2D remains fully usable when WebGL2 cannot be created", async ({ pag
   expect(pageErrors).toEqual([]);
 });
 
-test("losing a live WebGL2 context degrades to Canvas2D without losing the world", async ({ page }) => {
+test("WebGL2 shader initializes, then context loss degrades without losing the world", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
   await page.goto("./");
   await waitForWorld(page);
 
-  const mode = await page.locator("html").getAttribute("data-render-mode");
-  if (mode === "enhanced") {
-    const contextLost = await page.evaluate(() => {
-      const canvas = document.querySelector<HTMLCanvasElement>("#texture-effects");
-      const gl = canvas?.getContext("webgl2");
-      const extension = gl?.getExtension("WEBGL_lose_context");
-      if (!extension) return false;
-      extension.loseContext();
-      return true;
-    });
+  // CI launches Chromium with SwiftShader WebGL2. This assertion is intentional:
+  // a shader compile/link/resource failure must fail deployment rather than being
+  // silently accepted as a valid fallback result.
+  await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced");
+  await expect(page.locator("#render-mode")).toContainText("WebGL2");
+  await expect(page.locator("#texture-shader-toggle")).toBeChecked();
+  await expect(page.locator("#texture-shader-toggle")).toBeEnabled();
 
-    if (contextLost) {
-      await expect(page.locator("html")).toHaveAttribute("data-render-mode", "fallback");
-      await expect(page.locator("#texture-shader-toggle")).toBeDisabled();
-      await waitForWorld(page);
-    }
-  } else {
-    expect(["canvas", "fallback"]).toContain(mode);
-  }
+  const contextLost = await page.evaluate(() => {
+    const canvas = document.querySelector<HTMLCanvasElement>("#texture-effects");
+    const gl = canvas?.getContext("webgl2");
+    const extension = gl?.getExtension("WEBGL_lose_context");
+    if (!extension) return false;
+    extension.loseContext();
+    return true;
+  });
 
+  expect(contextLost).toBe(true);
+  await expect(page.locator("html")).toHaveAttribute("data-render-mode", "fallback");
+  await expect(page.locator("#texture-shader-toggle")).toBeDisabled();
+  await waitForWorld(page);
   expect(pageErrors).toEqual([]);
 });
