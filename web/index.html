@@ -95,14 +95,14 @@
           <strong>Tile 纹理工具</strong>
           <button id="texture-tool-close" type="button">关闭</button>
         </div>
-        <p class="texture-tool-note">上传 PNG / BMP / WebP。严格按 8×8 单元格从左到右、从上到下读取前 7 格，对应：深水、浅水、沙地、草地、森林、岩地、雪地。纹理格允许为空，不会自动复用其他格；地图底色可通过 HUD 的“底色”开关独立显示或隐藏。</p>
+        <p class="texture-tool-note">上传 PNG / BMP / WebP。严格按 8×8 单元格从左到右、从上到下读取前 8 格。基础地形槽位 0–5：深水、浅水、沙地、土地、岩地、雪地；修饰槽位 6–7：草地、树林。任意纹理格都允许为空，不会自动复用其他格；草地/树林只叠加在土地基础层上。</p>
         <label class="texture-file-label" for="texture-file">选择 spritesheet</label>
         <input id="texture-file" type="file" accept="image/png,image/bmp,image/webp,image/*" />
         <div id="texture-preview" class="texture-preview" aria-label="地形纹理预览"></div>
         <div class="texture-tool-actions">
           <button id="texture-reset" type="button">恢复默认</button>
         </div>
-        <div id="texture-status" class="texture-status" aria-live="polite">当前使用项目默认纹理：槽位 0 有纹理，其余槽位为空</div>
+        <div id="texture-status" class="texture-status" aria-live="polite">当前默认：深水、草地、树林槽位有纹理，其余槽位为空</div>
       </aside>
     </main>
     <script type="module" src="/src/main.ts"></script>

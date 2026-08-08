@@ -1,24 +1,30 @@
+use crate::hash::hash_coords;
 use crate::macro_world::{MacroNeighborhood, MACRO_CELL_TILES};
 use crate::noise::NoiseFields;
 
 /// One runtime chunk is exactly one macro-map pixel expanded to playable tiles.
 pub const CHUNK_SIZE: i64 = MACRO_CELL_TILES;
 pub const CHUNK_AREA: usize = (CHUNK_SIZE * CHUNK_SIZE) as usize;
+pub const CHUNK_OUTPUT_BYTES: usize = CHUNK_AREA * 2;
+
+const GRASS_TAG: u64 = 0x4752_4153_535F_5633;
+const GROVE_CLUSTER_TAG: u64 = 0x4752_4F56_455F_4333;
+const GROVE_SINGLETON_TAG: u64 = 0x4752_4F56_455F_5333;
+const GROVE_CLUSTER_CELL: i64 = 8;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Terrain {
+pub enum BaseTerrain {
     DeepWater = 0,
     Water = 1,
     Sand = 2,
-    Grass = 3,
-    Forest = 4,
-    Rock = 5,
-    Snow = 6,
+    Land = 3,
+    Rock = 4,
+    Snow = 5,
 }
 
-impl Terrain {
-    pub fn classify(elevation: f32, moisture: f32) -> Self {
+impl BaseTerrain {
+    pub fn classify(elevation: f32) -> Self {
         if elevation < -0.25 {
             Self::DeepWater
         } else if elevation < -0.10 {
@@ -29,24 +35,97 @@ impl Terrain {
             Self::Snow
         } else if elevation > 0.58 {
             Self::Rock
-        } else if moisture > 0.30 {
-            Self::Forest
         } else {
-            Self::Grass
+            Self::Land
         }
     }
 }
 
-pub fn macro_cell_biome(world_seed: u64, macro_x: i64, macro_y: i64) -> Terrain {
-    let fields = NoiseFields::new(world_seed);
-    let (elevation, moisture) = fields.sample_macro(macro_x, macro_y);
-    Terrain::classify(elevation, moisture)
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decoration {
+    None = 0,
+    Grass = 1,
+    Grove = 2,
 }
 
+pub fn macro_cell_biome(world_seed: u64, macro_x: i64, macro_y: i64) -> BaseTerrain {
+    let fields = NoiseFields::new(world_seed);
+    let (elevation, _) = fields.sample_macro(macro_x, macro_y);
+    BaseTerrain::classify(elevation)
+}
+
+fn hash01(value: u64) -> f32 {
+    const DENOMINATOR: f32 = 16_777_215.0;
+    ((value >> 40) & 0x00ff_ffff) as f32 / DENOMINATOR
+}
+
+fn grove_cluster_contains(world_seed: u64, world_x: i64, world_y: i64, moisture: f32) -> bool {
+    let moisture01 = ((moisture + 1.0) * 0.5).clamp(0.0, 1.0);
+    let cell_x = world_x.div_euclid(GROVE_CLUSTER_CELL);
+    let cell_y = world_y.div_euclid(GROVE_CLUSTER_CELL);
+    let activation_threshold = 0.06 + moisture01 * 0.14;
+
+    for offset_y in -1..=1 {
+        for offset_x in -1..=1 {
+            let candidate_x = cell_x + offset_x;
+            let candidate_y = cell_y + offset_y;
+            let signature = hash_coords(
+                world_seed,
+                GROVE_CLUSTER_TAG,
+                candidate_x,
+                candidate_y,
+            );
+            if hash01(signature) >= activation_threshold {
+                continue;
+            }
+
+            let center_x = candidate_x * GROVE_CLUSTER_CELL + ((signature >> 8) & 7) as i64;
+            let center_y = candidate_y * GROVE_CLUSTER_CELL + ((signature >> 16) & 7) as i64;
+            let radius = 1.25 + (((signature >> 24) & 3) as f32) * 0.40;
+            let dx = (world_x - center_x) as f32;
+            let dy = (world_y - center_y) as f32;
+            if dx * dx + dy * dy <= radius * radius {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
+fn decoration_for_land(world_seed: u64, world_x: i64, world_y: i64, moisture: f32) -> Decoration {
+    let moisture01 = ((moisture + 1.0) * 0.5).clamp(0.0, 1.0);
+
+    if grove_cluster_contains(world_seed, world_x, world_y, moisture) {
+        return Decoration::Grove;
+    }
+
+    let singleton_chance = 0.004 + moisture01 * 0.016;
+    if hash01(hash_coords(
+        world_seed,
+        GROVE_SINGLETON_TAG,
+        world_x,
+        world_y,
+    )) < singleton_chance
+    {
+        return Decoration::Grove;
+    }
+
+    let grass_chance = 0.08 + moisture01 * 0.18;
+    if hash01(hash_coords(world_seed, GRASS_TAG, world_x, world_y)) < grass_chance {
+        Decoration::Grass
+    } else {
+        Decoration::None
+    }
+}
+
+/// Generate two semantic planes in one allocation:
+/// [0..CHUNK_AREA) = BaseTerrain, [CHUNK_AREA..2*CHUNK_AREA) = Decoration.
 pub fn generate_chunk(world_seed: u64, chunk_x: i64, chunk_y: i64) -> Vec<u8> {
     let fields = NoiseFields::new(world_seed);
     let macro_neighborhood = MacroNeighborhood::new(chunk_x, chunk_y, &fields);
-    let mut output = vec![0u8; CHUNK_AREA];
+    let mut output = vec![0u8; CHUNK_OUTPUT_BYTES];
 
     let base_x = chunk_x
         .checked_mul(CHUNK_SIZE)
@@ -66,9 +145,16 @@ pub fn generate_chunk(world_seed: u64, chunk_x: i64, chunk_y: i64) -> Vec<u8> {
             // variation without becoming a second independent chunk generator.
             let elevation = (macro_elevation + local_elevation * 0.085).clamp(-1.0, 1.0);
             let moisture = (macro_moisture + local_moisture * 0.12).clamp(-1.0, 1.0);
-            let terrain = Terrain::classify(elevation, moisture);
+            let base_terrain = BaseTerrain::classify(elevation);
+            let decoration = if base_terrain == BaseTerrain::Land {
+                decoration_for_land(world_seed, world_x, world_y, moisture)
+            } else {
+                Decoration::None
+            };
+
             let index = (local_y * CHUNK_SIZE + local_x) as usize;
-            output[index] = terrain as u8;
+            output[index] = base_terrain as u8;
+            output[CHUNK_AREA + index] = decoration as u8;
         }
     }
 
@@ -88,9 +174,13 @@ mod tests {
         hash
     }
 
+    fn planes(bytes: &[u8]) -> (&[u8], &[u8]) {
+        bytes.split_at(CHUNK_AREA)
+    }
+
     #[test]
-    fn chunk_has_expected_size() {
-        assert_eq!(generate_chunk(1, 0, 0).len(), CHUNK_AREA);
+    fn chunk_has_expected_two_plane_size() {
+        assert_eq!(generate_chunk(1, 0, 0).len(), CHUNK_OUTPUT_BYTES);
     }
 
     #[test]
@@ -111,14 +201,56 @@ mod tests {
 
     #[test]
     fn all_ids_are_valid() {
-        for id in generate_chunk(999, 12, -34) {
-            assert!(id <= Terrain::Snow as u8);
+        let generated = generate_chunk(999, 12, -34);
+        let (base, decoration) = planes(&generated);
+        assert!(base.iter().all(|id| *id <= BaseTerrain::Snow as u8));
+        assert!(decoration.iter().all(|id| *id <= Decoration::Grove as u8));
+    }
+
+    #[test]
+    fn decorations_only_exist_on_land() {
+        let generated = generate_chunk(0xD3C0_A710, 2, -3);
+        let (base, decoration) = planes(&generated);
+        for index in 0..CHUNK_AREA {
+            if decoration[index] != Decoration::None as u8 {
+                assert_eq!(base[index], BaseTerrain::Land as u8);
+            }
         }
     }
 
     #[test]
+    fn land_is_the_primary_walkable_surface_and_decorations_are_sparse() {
+        let seed = 0xBA17_2026_0808_u64;
+        let mut land_count = 0usize;
+        let mut grass_count = 0usize;
+        let mut grove_count = 0usize;
+
+        for y in -2..=2 {
+            for x in -2..=2 {
+                let generated = generate_chunk(seed, x, y);
+                let (base, decoration) = planes(&generated);
+                for index in 0..CHUNK_AREA {
+                    if base[index] == BaseTerrain::Land as u8 {
+                        land_count += 1;
+                        if decoration[index] == Decoration::Grass as u8 {
+                            grass_count += 1;
+                        } else if decoration[index] == Decoration::Grove as u8 {
+                            grove_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(land_count > 0);
+        assert!(grass_count > 0);
+        assert!(grove_count > 0);
+        assert!(grass_count + grove_count < land_count);
+    }
+
+    #[test]
     fn macro_biome_is_valid() {
-        assert!((macro_cell_biome(88, -12, 7) as u8) <= Terrain::Snow as u8);
+        assert!((macro_cell_biome(88, -12, 7) as u8) <= BaseTerrain::Snow as u8);
     }
 
     #[test]

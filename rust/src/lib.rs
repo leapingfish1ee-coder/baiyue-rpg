@@ -6,7 +6,7 @@ mod terrain;
 use macro_world::{edge_contract, EdgeDirection};
 use wasm_bindgen::prelude::*;
 
-pub const GENERATOR_VERSION: u32 = 2;
+pub const GENERATOR_VERSION: u32 = 3;
 
 #[wasm_bindgen]
 pub fn generator_version() -> u32 {
@@ -18,7 +18,7 @@ pub fn chunk_size() -> u32 {
     terrain::CHUNK_SIZE as u32
 }
 
-/// Return the dominant biome of one macro-map pixel.
+/// Return the dominant base terrain of one macro-map pixel.
 #[wasm_bindgen]
 pub fn macro_cell_biome(seed: u64, macro_x: i64, macro_y: i64) -> u8 {
     terrain::macro_cell_biome(seed, macro_x, macro_y) as u8
@@ -33,7 +33,8 @@ pub fn macro_edge_signature(seed: u64, macro_x: i64, macro_y: i64, direction: u8
 }
 
 /// Generate one macro pixel expanded into a 64×64 playable semantic TileMap region.
-/// JavaScript passes `u64`/`i64` as BigInt through wasm-bindgen.
+/// The returned Vec contains two contiguous 4096-byte planes:
+/// BaseTerrain first, then Decoration. JavaScript passes `u64`/`i64` as BigInt.
 #[wasm_bindgen]
 pub fn generate_chunk(seed: u64, chunk_x: i64, chunk_y: i64) -> Vec<u8> {
     terrain::generate_chunk(seed, chunk_x, chunk_y)

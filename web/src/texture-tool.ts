@@ -1,11 +1,13 @@
 import {
+  BASE_TERRAIN_COUNT,
+  LAND_TERRAIN_ID,
   Renderer,
   SOURCE_TILE_PIXELS,
   TERRAIN_BASE_COLORS,
-  TERRAIN_NAMES,
+  TEXTURE_SLOT_NAMES,
 } from "./renderer";
 
-const STORAGE_KEY = "baiyue-rpg:terrain-sheet:v1";
+const STORAGE_KEY = "baiyue-rpg:terrain-sheet:v2";
 const MAX_STORED_DATA_URL_LENGTH = 1_500_000;
 const MAX_IMAGE_DIMENSION = 4096;
 
@@ -102,7 +104,7 @@ export class TextureTool {
     }
 
     this.setStatus(
-      `${label} · ${image.naturalWidth}×${image.naturalHeight}px · 固定顺序读取 7 格，${visibleCount} 格非空${persistenceNote}`,
+      `${label} · ${image.naturalWidth}×${image.naturalHeight}px · 固定顺序读取 8 格，${visibleCount} 格非空${persistenceNote}`,
     );
   }
 
@@ -110,7 +112,7 @@ export class TextureTool {
     const availableCount = columns * rows;
     const masks: HTMLCanvasElement[] = [];
 
-    for (let index = 0; index < TERRAIN_NAMES.length; index += 1) {
+    for (let index = 0; index < TEXTURE_SLOT_NAMES.length; index += 1) {
       const canvas = document.createElement("canvas");
       canvas.width = SOURCE_TILE_PIXELS;
       canvas.height = SOURCE_TILE_PIXELS;
@@ -177,7 +179,7 @@ export class TextureTool {
 
   private buildPreviewSlots(): void {
     this.elements.preview.replaceChildren();
-    for (let index = 0; index < TERRAIN_NAMES.length; index += 1) {
+    for (let index = 0; index < TEXTURE_SLOT_NAMES.length; index += 1) {
       const item = document.createElement("div");
       item.className = "texture-preview-item";
 
@@ -185,11 +187,12 @@ export class TextureTool {
       canvas.width = SOURCE_TILE_PIXELS;
       canvas.height = SOURCE_TILE_PIXELS;
       canvas.className = "texture-preview-canvas";
-      canvas.setAttribute("aria-label", `${TERRAIN_NAMES[index]}纹理预览`);
+      canvas.setAttribute("aria-label", `${TEXTURE_SLOT_NAMES[index]}纹理预览`);
       this.previewCanvases.push(canvas);
 
       const label = document.createElement("span");
-      label.textContent = `${index} ${TERRAIN_NAMES[index]}`;
+      const layer = index < BASE_TERRAIN_COUNT ? "基础" : "修饰";
+      label.textContent = `${layer} ${index} ${TEXTURE_SLOT_NAMES[index]}`;
       item.append(canvas, label);
       this.elements.preview.append(item);
     }
@@ -202,7 +205,8 @@ export class TextureTool {
       if (!canvas) continue;
       const context = canvas.getContext("2d");
       if (!context) continue;
-      const baseColor = TERRAIN_BASE_COLORS[index] ?? [24, 24, 24];
+      const baseIndex = index < BASE_TERRAIN_COUNT ? index : LAND_TERRAIN_ID;
+      const baseColor = TERRAIN_BASE_COLORS[baseIndex] ?? [24, 24, 24];
       context.imageSmoothingEnabled = false;
       context.fillStyle = `rgb(${baseColor[0]} ${baseColor[1]} ${baseColor[2]})`;
       context.fillRect(0, 0, canvas.width, canvas.height);
@@ -215,7 +219,7 @@ export class TextureTool {
     localStorage.removeItem(STORAGE_KEY);
     this.renderer.resetTerrainTextures();
     this.renderPreviews();
-    this.setStatus("已恢复项目默认纹理：槽位 0 有纹理，其余槽位为空");
+    this.setStatus("已恢复项目默认纹理：深水、草地、树林槽位有默认图案，其余槽位为空");
   }
 
   private setStatus(message: string, isError = false): void {

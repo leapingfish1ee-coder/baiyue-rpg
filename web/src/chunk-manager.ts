@@ -5,6 +5,9 @@ export type Chunk = {
   x: number;
   y: number;
   macroBiome: number;
+  baseTiles: Uint8Array;
+  decorations: Uint8Array;
+  /** Compatibility alias for renderers that still read the base terrain plane as `tiles`. */
   tiles: Uint8Array;
 };
 
@@ -62,13 +65,24 @@ export class ChunkManager {
       if (expectedRequestId !== message.requestId) return;
 
       this.pending.delete(key);
+      const planeArea = this.chunkSize * this.chunkSize;
+      if (message.buffer.byteLength !== planeArea * 2) {
+        this.status.error = `Chunk payload mismatch: expected ${planeArea * 2} bytes, got ${message.buffer.byteLength}`;
+        return;
+      }
+
+      const baseTiles = new Uint8Array(message.buffer, 0, planeArea);
+      const decorations = new Uint8Array(message.buffer, planeArea, planeArea);
       this.cache.set(key, {
         key,
         x: chunkX,
         y: chunkY,
         macroBiome: message.macroBiome,
-        tiles: new Uint8Array(message.buffer),
+        baseTiles,
+        decorations,
+        tiles: baseTiles,
       });
+      this.status.error = null;
       this.prune();
     };
   }
@@ -89,6 +103,7 @@ export class ChunkManager {
     this.epoch += 1;
     this.cache.clear();
     this.pending.clear();
+    this.status.error = null;
   }
 
   ensureVisible(

@@ -1,16 +1,30 @@
 import type { Camera } from "./camera";
 import type { Chunk, ChunkManager } from "./chunk-manager";
 
-export const TERRAIN_NAMES = ["深水", "浅水", "沙地", "草地", "森林", "岩地", "雪地"] as const;
+export const BASE_TERRAIN_NAMES = ["深水", "浅水", "沙地", "土地", "岩地", "雪地"] as const;
+export const TERRAIN_NAMES = BASE_TERRAIN_NAMES;
+export const DECORATION_NAMES = ["草地", "树林"] as const;
+export const TEXTURE_SLOT_NAMES = [...BASE_TERRAIN_NAMES, ...DECORATION_NAMES] as const;
+export const BASE_TERRAIN_COUNT = BASE_TERRAIN_NAMES.length;
+export const LAND_TERRAIN_ID = 3;
 
 export const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
   [22, 63, 112],   // deep water
   [40, 103, 166],  // water
   [210, 190, 131], // sand
-  [105, 158, 86],  // grass
-  [47, 105, 65],   // forest
+  [154, 126, 82],  // land
   [112, 113, 107], // rock
   [229, 235, 238], // snow
+];
+
+export const DECORATION_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+  [105, 158, 86], // grass
+  [47, 105, 65],  // grove
+];
+
+const TEXTURE_COLORS: ReadonlyArray<readonly [number, number, number]> = [
+  ...TERRAIN_COLORS,
+  ...DECORATION_COLORS,
 ];
 
 const BASE_BRIGHTNESS = 0.42;
@@ -29,14 +43,35 @@ const DISPLAY_SCALE = 4;
 const MAX_SURFACE_CACHE = 32;
 const WORLD_BACKGROUND = "#000000";
 
-// Current project default sheet has only slot 0 populated; slots 1..6 are intentionally empty.
-const DEFAULT_TILE_MASK = [
+const DEFAULT_DEEP_WATER_MASK = [
   "00000000",
   "00000000",
   "00000000",
   "00011000",
   "00011000",
   "00000000",
+  "00000000",
+  "00000000",
+] as const;
+
+const DEFAULT_GRASS_MASK = [
+  "00000000",
+  "00001000",
+  "00000000",
+  "00100000",
+  "00000010",
+  "00010000",
+  "00000000",
+  "00000000",
+] as const;
+
+const DEFAULT_GROVE_MASK = [
+  "00000000",
+  "00011000",
+  "00111100",
+  "00111100",
+  "00011000",
+  "00011000",
   "00000000",
   "00000000",
 ] as const;
@@ -147,18 +182,27 @@ export class Renderer {
   }
 
   private createDefaultMasks(): HTMLCanvasElement[] {
-    const masks = Array.from({ length: TERRAIN_NAMES.length }, () => this.createEmptyMask());
-    const context = masks[0]?.getContext("2d");
+    const masks = Array.from({ length: TEXTURE_SLOT_NAMES.length }, () => this.createEmptyMask());
+    const deepWater = masks[0];
+    const grass = masks[BASE_TERRAIN_COUNT];
+    const grove = masks[BASE_TERRAIN_COUNT + 1];
+    if (deepWater) this.paintMask(deepWater, DEFAULT_DEEP_WATER_MASK);
+    if (grass) this.paintMask(grass, DEFAULT_GRASS_MASK);
+    if (grove) this.paintMask(grove, DEFAULT_GROVE_MASK);
+    return masks;
+  }
+
+  private paintMask(canvas: HTMLCanvasElement, rows: readonly string[]): void {
+    const context = canvas.getContext("2d");
     if (!context) throw new Error("2D canvas context is unavailable.");
     context.fillStyle = "#ffffff";
     for (let y = 0; y < SOURCE_TILE_PIXELS; y += 1) {
-      const row = DEFAULT_TILE_MASK[y];
+      const row = rows[y];
       if (!row) continue;
       for (let x = 0; x < SOURCE_TILE_PIXELS; x += 1) {
         if (row[x] === "1") context.fillRect(x, y, 1, 1);
       }
     }
-    return masks;
   }
 
   private createEmptyMask(): HTMLCanvasElement {
@@ -169,7 +213,7 @@ export class Renderer {
   }
 
   private createTintedSprites(masks: readonly CanvasImageSource[]): HTMLCanvasElement[] {
-    return TERRAIN_COLORS.map((color, index) => {
+    return TEXTURE_COLORS.map((color, index) => {
       const canvas = this.createEmptyMask();
       const context = canvas.getContext("2d");
       if (!context) throw new Error("2D canvas context is unavailable.");
@@ -255,9 +299,10 @@ export class Renderer {
     context.fillStyle = WORLD_BACKGROUND;
     context.fillRect(0, 0, canvas.width, canvas.height);
 
-    for (let i = 0; i < chunk.tiles.length; i += 1) {
-      const terrainId = chunk.tiles[i] ?? 0;
-      const baseColor = TERRAIN_BASE_COLORS[terrainId] ?? [24, 24, 24];
+    for (let i = 0; i < chunk.baseTiles.length; i += 1) {
+      const baseTerrainId = chunk.baseTiles[i] ?? LAND_TERRAIN_ID;
+      const decorationId = chunk.decorations[i] ?? 0;
+      const baseColor = TERRAIN_BASE_COLORS[baseTerrainId] ?? [24, 24, 24];
       const tileX = (i % chunkSize) * SOURCE_TILE_STRIDE;
       const tileY = Math.floor(i / chunkSize) * SOURCE_TILE_STRIDE;
 
@@ -266,9 +311,15 @@ export class Renderer {
         context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       }
 
-      const shaderOwnsWaterTexture = this.waterShaderEnabled && (terrainId === 0 || terrainId === 1);
-      const sprite = this.terrainSprites[terrainId];
-      if (!shaderOwnsWaterTexture && sprite) context.drawImage(sprite, tileX, tileY);
+      const shaderOwnsWaterTexture = this.waterShaderEnabled && (baseTerrainId === 0 || baseTerrainId === 1);
+      const baseSprite = this.terrainSprites[baseTerrainId];
+      if (!shaderOwnsWaterTexture && baseSprite) context.drawImage(baseSprite, tileX, tileY);
+
+      if (decorationId > 0) {
+        const decorationSpriteIndex = BASE_TERRAIN_COUNT + decorationId - 1;
+        const decorationSprite = this.terrainSprites[decorationSpriteIndex];
+        if (decorationSprite) context.drawImage(decorationSprite, tileX, tileY);
+      }
     }
 
     this.surfaces.set(chunk.key, canvas);
