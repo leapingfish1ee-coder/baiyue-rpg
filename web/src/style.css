@@ -84,6 +84,30 @@ button:focus-visible, input:focus-visible { outline: 2px solid #9ec7e7; outline-
 .hud-toggle input { width: 15px; height: 15px; margin: 0; accent-color: #8fb8d8; }
 .hud-toggle:has(input:disabled) { opacity: .5; cursor: not-allowed; }
 
+.zoom-presets {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.zoom-presets > span {
+  margin-right: 2px;
+  font-size: 11px;
+  color: rgba(232,237,242,.58);
+}
+.zoom-presets button {
+  height: 26px;
+  min-width: 48px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.zoom-presets button.is-active {
+  border-color: rgba(158,199,231,.72);
+  background: #294158;
+}
+
 .stats {
   display: flex;
   flex-wrap: wrap;
