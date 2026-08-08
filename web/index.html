@@ -19,11 +19,22 @@
             <input id="grid-toggle" type="checkbox" checked />
             <span>网格</span>
           </label>
+          <label class="hud-toggle" for="base-color-toggle">
+            <input id="base-color-toggle" type="checkbox" checked />
+            <span>底色</span>
+          </label>
           <label class="hud-toggle" for="water-shader-toggle">
             <input id="water-shader-toggle" type="checkbox" checked />
             <span>水面 Shader</span>
           </label>
           <button id="texture-tool-toggle" type="button" aria-expanded="false" aria-controls="texture-tool">纹理工具</button>
+        </div>
+        <div class="zoom-presets" role="group" aria-label="缩放快捷级数">
+          <span>缩放</span>
+          <button type="button" data-zoom="0.5" title="快捷键 1">50%</button>
+          <button type="button" data-zoom="1" title="快捷键 2">100%</button>
+          <button type="button" data-zoom="2" title="快捷键 3">200%</button>
+          <button type="button" data-zoom="4" title="快捷键 4">400%</button>
         </div>
         <div class="stats">
           <span id="status">WASM 初始化中</span>
@@ -31,7 +42,7 @@
           <span id="chunks">0 chunks</span>
           <span id="zoom">100%</span>
         </div>
-        <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · G 切换网格 · 深水/浅水使用 WebGL2 动态颜色噪波</div>
+        <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · 1–4 快捷缩放 · G 切换网格 · 32px tile + 4px 间距</div>
 
         <details id="water-parameter-panel" class="shader-parameter-panel">
           <summary>水面参数</summary>
@@ -84,7 +95,7 @@
           <strong>Tile 纹理工具</strong>
           <button id="texture-tool-close" type="button">关闭</button>
         </div>
-        <p class="texture-tool-note">上传 PNG / BMP / WebP。严格按 8×8 单元格从左到右、从上到下读取前 7 格，对应：深水、浅水、沙地、草地、森林、岩地、雪地。纹理格允许为空，不会自动复用其他格；每个 tile 始终保留较暗的地形底色。</p>
+        <p class="texture-tool-note">上传 PNG / BMP / WebP。严格按 8×8 单元格从左到右、从上到下读取前 7 格，对应：深水、浅水、沙地、草地、森林、岩地、雪地。纹理格允许为空，不会自动复用其他格；地图底色可通过 HUD 的“底色”开关独立显示或隐藏。</p>
         <label class="texture-file-label" for="texture-file">选择 spritesheet</label>
         <input id="texture-file" type="file" accept="image/png,image/bmp,image/webp,image/*" />
         <div id="texture-preview" class="texture-preview" aria-label="地形纹理预览"></div>
