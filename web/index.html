@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Infinite TileMap Terrain MVP</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="world" aria-label="Infinite generated terrain"></canvas>
+      <section id="hud">
+        <div class="row">
+          <label for="seed">Seed</label>
+          <input id="seed" value="20260808" spellcheck="false" />
+          <button id="apply-seed" type="button">应用</button>
+        </div>
+        <div class="stats">
+          <span id="status">WASM 初始化中</span>
+          <span id="position">tile 0, 0</span>
+          <span id="chunks">0 chunks</span>
+          <span id="zoom">100%</span>
+        </div>
+        <div class="hint">拖拽 / WASD 平移 · 滚轮缩放 · 同一 seed 与坐标始终生成相同地形</div>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

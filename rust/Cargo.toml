@@ -1,0 +1,18 @@
+[package]
+name = "terrain-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2.126"
+fastnoise-lite = { version = "1.1.1", default-features = false, features = ["f64", "std"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

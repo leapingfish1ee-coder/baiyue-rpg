@@ -123,22 +123,10 @@ Do not add WFC or WebGPU first. Add an automated seam/determinism harness that h
 
 ## GitHub Pages deployment
 
-This repository includes `.github/workflows/pages.yml`. On every push to `main`, GitHub Actions will:
+This repository includes `.github/workflows/pages.yml`. On every push to `main`, GitHub Actions will install Rust/WASM and Node, run Rust tests, build the Vite site, and deploy `web/dist` to GitHub Pages.
 
-1. install stable Rust and `wasm32-unknown-unknown`,
-2. install `wasm-pack 0.15.0`,
-3. run the Rust generator tests,
-4. install Node.js 22 and web dependencies,
-5. build the WASM package and Vite site,
-6. upload `web/dist`,
-7. deploy it to GitHub Pages.
-
-The CI workflow sets `VITE_BASE_PATH=/<repository>/`, so the worker can load generated WASM files from a GitHub Pages project-site subpath instead of assuming the domain root.
-
-After creating the GitHub repository, open **Settings → Pages** and set **Build and deployment → Source** to **GitHub Actions**. Push the project to the repository's `main` branch. The deployment URL will appear in the workflow's `deploy` job and in the repository's Pages settings.
-
-For a normal project repository named `infinite-tilemap-mvp`, the expected GitHub.com URL shape is:
+Expected Pages URL for this repository:
 
 ```text
-https://<github-user>.github.io/infinite-tilemap-mvp/
+https://leapingfish1ee-coder.github.io/baiyue-rpg/
 ```
