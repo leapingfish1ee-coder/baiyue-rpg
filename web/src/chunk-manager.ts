@@ -4,6 +4,7 @@ export type Chunk = {
   key: string;
   x: number;
   y: number;
+  macroBiome: number;
   tiles: Uint8Array;
 };
 
@@ -14,6 +15,7 @@ export type ChunkManagerStatus = {
 };
 
 export class ChunkManager {
+  /// A runtime chunk is one macro-map pixel expanded to a 64×64 playable region.
   readonly chunkSize = 64;
 
   private readonly worker = new Worker(new URL("./generator-worker.ts", import.meta.url), {
@@ -53,15 +55,18 @@ export class ChunkManager {
       }
 
       if (message.epoch !== this.epoch) return;
-      const key = this.key(Number(message.chunkX), Number(message.chunkY));
+      const chunkX = Number(message.chunkX);
+      const chunkY = Number(message.chunkY);
+      const key = this.key(chunkX, chunkY);
       const expectedRequestId = this.pending.get(key);
       if (expectedRequestId !== message.requestId) return;
 
       this.pending.delete(key);
       this.cache.set(key, {
         key,
-        x: Number(message.chunkX),
-        y: Number(message.chunkY),
+        x: chunkX,
+        y: chunkY,
+        macroBiome: message.macroBiome,
         tiles: new Uint8Array(message.buffer),
       });
       this.prune();
@@ -115,6 +120,10 @@ export class ChunkManager {
 
   getChunks(): Iterable<Chunk> {
     return this.cache.values();
+  }
+
+  getChunk(x: number, y: number): Chunk | undefined {
+    return this.cache.get(this.key(x, y));
   }
 
   get loadedCount(): number {

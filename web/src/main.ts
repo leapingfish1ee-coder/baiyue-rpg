@@ -3,6 +3,8 @@ import { Camera } from "./camera";
 import { ChunkManager } from "./chunk-manager";
 import { Renderer } from "./renderer";
 
+const BIOME_NAMES = ["深水", "浅水", "沙地", "草地", "森林", "岩地", "雪地"] as const;
+
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
   if (!element) throw new Error(`Required UI element is missing: ${selector}`);
@@ -56,6 +58,7 @@ function applySeed(): void {
   try {
     const seed = parseSeed(seedInput.value);
     chunkManager.setSeed(seed);
+    renderer.clear();
     seedInput.setCustomValidity("");
   } catch (error: unknown) {
     seedInput.setCustomValidity(error instanceof Error ? error.message : String(error));
@@ -88,14 +91,19 @@ function frame(now: number): void {
 
   const centerTileX = Math.floor(camera.x / renderer.tilePixels);
   const centerTileY = Math.floor(camera.y / renderer.tilePixels);
+  const macroX = Math.floor(centerTileX / chunkManager.chunkSize);
+  const macroY = Math.floor(centerTileY / chunkManager.chunkSize);
+  const centerMacro = chunkManager.getChunk(macroX, macroY);
+  const biomeName = centerMacro ? (BIOME_NAMES[centerMacro.macroBiome] ?? `#${centerMacro.macroBiome}`) : "加载中";
   const status = chunkManager.getStatus();
+
   statusElement.textContent = status.error
     ? `错误: ${status.error}`
     : status.ready
-      ? `WASM v${status.generatorVersion ?? "?"}`
+      ? `WASM v${status.generatorVersion ?? "?"} · 1 macro = ${chunkManager.chunkSize}×${chunkManager.chunkSize} tiles`
       : "WASM 初始化中";
-  positionElement.textContent = `tile ${centerTileX.toLocaleString()}, ${centerTileY.toLocaleString()}`;
-  chunksElement.textContent = `${chunkManager.loadedCount} chunks`;
+  positionElement.textContent = `tile ${centerTileX.toLocaleString()}, ${centerTileY.toLocaleString()} · macro ${macroX}, ${macroY} · ${biomeName}`;
+  chunksElement.textContent = `${chunkManager.loadedCount} macro regions`;
   zoomElement.textContent = `${Math.round(camera.zoom * 100)}%`;
 
   requestAnimationFrame(frame);

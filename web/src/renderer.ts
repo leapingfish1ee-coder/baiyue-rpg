@@ -15,6 +15,10 @@ export class Renderer {
   readonly tilePixels = 16;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
 
+  clear(): void {
+    this.surfaces.clear();
+  }
+
   draw(
     context: CanvasRenderingContext2D,
     width: number,

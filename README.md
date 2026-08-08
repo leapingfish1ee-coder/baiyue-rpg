@@ -1,19 +1,49 @@
-# Infinite TileMap Terrain MVP
+# Baiyue RPG — Hierarchical Terrain MVP
 
-Browser MVP for deterministic, chunked, effectively-infinite 2D terrain generation.
+Browser MVP for deterministic, streamed, effectively-infinite 2D terrain where one macro-map pixel expands into a real playable TileMap region.
 
-## Scope
+## Current world model
 
-- 64×64 semantic tile chunks.
-- Rust/WASM is the only terrain-generation authority.
-- FastNoiseLite continuous world-coordinate sampling.
-- Dedicated Web Worker keeps generation off the UI thread.
-- Canvas2D renderer uses one pixel per tile in cached chunk surfaces, then scales them with nearest-neighbor rendering.
-- Mouse drag / WASD panning and wheel zoom.
-- `u64` seed and Rust `i64` chunk/world coordinates at the generator boundary.
-- No rivers, roads, buildings, collision, navigation, WFC, persistence, or player edits.
+```text
+WorldSeed
+   ↓
+Macro map (deterministic pixels)
+   ↓ each pixel = one MacroCell
+MacroCell(x, y): elevation + moisture + dominant biome
+   ↓ read 3×3 macro neighborhood
+Smooth macro interpolation + absolute-coordinate local detail
+   ↓
+64×64 playable semantic tiles
+   ↓
+Web Worker → Uint8Array[4096] → Canvas2D chunk cache
+```
 
-Terrain IDs:
+The important invariant is now:
+
+```text
+1 macro pixel = 1 streamed runtime chunk = 64 × 64 playable tiles
+```
+
+The macro pixel is **not** nearest-neighbor enlarged. It acts as the dominant regional descriptor. Each playable tile is derived from the current macro cell plus its 8 neighbors, then receives low-amplitude local variation sampled in absolute world tile coordinates.
+
+## Why adjacent regions remain continuous
+
+Macro descriptors are sampled at macro-cell centers. A tile converts its absolute world coordinate back into macro-space and smoothstep-interpolates the surrounding macro centers. A cell only needs a `3×3` macro neighborhood to evaluate all of its own tiles. Adjacent cells therefore evaluate the same shared macro field instead of running independent random generators.
+
+Local elevation/moisture detail is also sampled from absolute world tile coordinates, so local noise cannot reset at a chunk boundary.
+
+## Edge contract
+
+`rust/src/macro_world.rs` defines a deterministic symmetric `EdgeContract` for adjacent macro cells. For terrain-only generation the continuous field already solves seams, so the edge signature is intentionally not used to force terrain shapes. It is reserved for discrete cross-region structures such as:
+
+- rivers,
+- roads,
+- walls/gates,
+- cave/region entrances.
+
+Both sides of an edge derive the same signature regardless of generation order. Future structure generators can derive shared exit positions and widths from it.
+
+## Terrain IDs
 
 | ID | Terrain |
 |---:|---|
@@ -25,30 +55,38 @@ Terrain IDs:
 | 5 | Rock |
 | 6 | Snow |
 
-## Prerequisites
+## Runtime stack
 
-- Node.js compatible with Vite 8 (Node 22.12+ is a safe choice).
-- Rust toolchain.
-- `wasm-pack` in `PATH`.
+- Rust/WASM: authoritative macro and playable terrain generation.
+- FastNoiseLite: deterministic macro fields and local absolute-coordinate detail.
+- Dedicated Web Worker: generation off the UI thread.
+- TypeScript/Vite: camera, streaming, cache and browser lifecycle.
+- Canvas2D: current validation renderer.
 
-Install wasm-pack using the method documented by the wasm-pack project for your platform.
+No rivers, roads, buildings, collision, navigation, WFC, persistence or player edits are generated yet.
 
-## Run
+## Validation built into Rust tests
+
+The generator currently tests:
+
+1. same seed + same region is byte deterministic;
+2. different seeds change output;
+3. negative region coordinates map contiguously;
+4. all semantic terrain IDs are valid;
+5. adjacent `3×3` neighborhoods produce exactly the same macro field on a shared boundary;
+6. opposite sides derive the same `EdgeContract`;
+7. an `8×8` macro region generates identical checksums regardless of visit order.
+
+`GENERATOR_VERSION` is now `2` because the world-generation contract changed from direct tile noise to hierarchical macro-region generation.
+
+## Run locally
+
+Prerequisites: Node.js 22+, Rust stable, `wasm32-unknown-unknown`, and `wasm-pack`.
 
 ```bash
 cd web
 npm install
 npm run dev
-```
-
-`npm run dev` first compiles `../rust` to `web/public/wasm`, then starts Vite.
-
-Production build:
-
-```bash
-cd web
-npm install
-npm run build
 ```
 
 Rust tests:
@@ -58,75 +96,21 @@ cd rust
 cargo test
 ```
 
-Native generator benchmark:
+Production build:
 
 ```bash
-cd rust
-cargo run --release --example benchmark
+cd web
+npm run build
 ```
 
-## Architecture
+## GitHub Pages
 
-```text
-camera / UI
-    │
-    ▼
-ChunkManager (TypeScript)
-    │ request seed + chunk coordinate
-    ▼
-Dedicated Web Worker
-    │ BigInt boundary
-    ▼
-Rust/WASM generate_chunk(seed, chunk_x, chunk_y)
-    │
-    ├─ SplitMix64-derived field seeds
-    ├─ FastNoiseLite domain warp
-    ├─ elevation + detail + moisture continuous fields
-    └─ semantic terrain classification
-    │
-    ▼
-Uint8Array[4096]
-    │ transferable ArrayBuffer
-    ▼
-Canvas2D chunk surface cache
-```
-
-## Determinism contract
-
-Generation depends only on:
-
-1. generator version,
-2. world seed,
-3. absolute world tile coordinates,
-4. fixed generation parameters.
-
-Chunk visitation order is not an input. The generator samples absolute coordinates, so adjacent chunk boundaries are samples at consecutive world positions rather than independently generated edges.
-
-If generation parameters or algorithms change later, increment `GENERATOR_VERSION` in `rust/src/lib.rs`. Do not silently change an existing version if saved worlds must remain reproducible.
-
-## Coordinate limits
-
-The Rust generator uses `i64` coordinates. The current browser camera uses JavaScript `number`, so interactive navigation is intentionally limited to JavaScript safe-integer chunk coordinates. This is still far beyond a practical rendered world. A later version can store the camera as `(BigInt chunk origin + local floating offset)` if exact navigation beyond ±2^53 chunks is required.
-
-## MVP acceptance checks
-
-1. Same seed + same chunk coordinate returns byte-identical output.
-2. Different visit order does not change output.
-3. Negative chunk coordinates render continuously across `(−1, 0)` and `(0, 0)`.
-4. Fast panning does not block the main thread on terrain generation.
-5. Changing seed clears the cache and regenerates visible chunks.
-6. Returning to a previously visited coordinate regenerates the same terrain after eviction.
-
-## Next technical step
-
-Do not add WFC or WebGPU first. Add an automated seam/determinism harness that hashes thousands of generated chunks, then tune biome parameters or add cross-chunk features such as rivers on top of the stable generator contract.
-
-## GitHub Pages deployment
-
-This repository includes `.github/workflows/pages.yml`. On every push to `main`, GitHub Actions will install Rust/WASM and Node, run Rust tests, build the Vite site, and deploy `web/dist` to GitHub Pages.
-
-Expected Pages URL for this repository:
+Pushes to `main` run Rust tests, compile Rust → WASM, type-check/build the Vite application and deploy `web/dist`.
 
 ```text
 https://leapingfish1ee-coder.github.io/baiyue-rpg/
 ```
+
+## Next world-generation layer
+
+Keep the macro-cell contract stable. The next high-value addition is a discrete cross-region structure layer driven by `EdgeContract`: first rivers, then roads/POIs. Do not add WFC globally; use it only inside bounded regions that already have fixed edge exits.

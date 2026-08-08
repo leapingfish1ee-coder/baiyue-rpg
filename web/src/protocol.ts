@@ -19,6 +19,7 @@ export type ChunkGeneratedMessage = {
   epoch: number;
   chunkX: string;
   chunkY: string;
+  macroBiome: number;
   buffer: ArrayBuffer;
 };
 

@@ -5,6 +5,7 @@ import type { GenerateChunkRequest, WorkerMessage } from "./protocol";
 type TerrainWasmModule = {
   default: (wasmUrl?: string | URL) => Promise<unknown>;
   generate_chunk: (seed: bigint, chunkX: bigint, chunkY: bigint) => Uint8Array;
+  macro_cell_biome: (seed: bigint, macroX: bigint, macroY: bigint) => number;
   chunk_size: () => number;
   generator_version: () => number;
 };
@@ -45,11 +46,11 @@ scope.onmessage = async (event: MessageEvent<GenerateChunkRequest>) => {
 
   try {
     const wasm = await wasmPromise;
-    const wasmTiles = wasm.generate_chunk(
-      BigInt(request.seed),
-      BigInt(request.chunkX),
-      BigInt(request.chunkY),
-    );
+    const seed = BigInt(request.seed);
+    const chunkX = BigInt(request.chunkX);
+    const chunkY = BigInt(request.chunkY);
+    const wasmTiles = wasm.generate_chunk(seed, chunkX, chunkY);
+    const macroBiome = wasm.macro_cell_biome(seed, chunkX, chunkY);
 
     // Transfer an owned buffer. Do not transfer WebAssembly.Memory itself.
     const tiles = new Uint8Array(wasmTiles);
@@ -59,6 +60,7 @@ scope.onmessage = async (event: MessageEvent<GenerateChunkRequest>) => {
       epoch: request.epoch,
       chunkX: request.chunkX,
       chunkY: request.chunkY,
+      macroBiome,
       buffer: tiles.buffer,
     };
     scope.postMessage(message, [tiles.buffer]);
