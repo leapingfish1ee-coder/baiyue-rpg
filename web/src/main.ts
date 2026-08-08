@@ -6,6 +6,7 @@ import { TextureTool } from "./texture-tool";
 import { WaterShaderRenderer, type WaterShaderParameters } from "./water-shader";
 
 const WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
+const ZOOM_PRESETS = [0.5, 1, 2, 4] as const;
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -18,9 +19,11 @@ const waterCanvas = requireElement<HTMLCanvasElement>("#water-effects");
 const seedInput = requireElement<HTMLInputElement>("#seed");
 const applySeedButton = requireElement<HTMLButtonElement>("#apply-seed");
 const gridToggle = requireElement<HTMLInputElement>("#grid-toggle");
+const baseColorToggle = requireElement<HTMLInputElement>("#base-color-toggle");
 const waterShaderToggle = requireElement<HTMLInputElement>("#water-shader-toggle");
 const waterParameterFields = requireElement<HTMLFieldSetElement>("#water-parameter-fields");
 const waterParameterReset = requireElement<HTMLButtonElement>("#water-parameter-reset");
+const zoomPresetButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-zoom]"));
 const statusElement = requireElement<HTMLElement>("#status");
 const positionElement = requireElement<HTMLElement>("#position");
 const chunksElement = requireElement<HTMLElement>("#chunks");
@@ -35,6 +38,7 @@ const chunkManager = new ChunkManager();
 const renderer = new Renderer();
 const waterShader = new WaterShaderRenderer(waterCanvas);
 renderer.setGridVisible(gridToggle.checked);
+renderer.setBaseColorVisible(baseColorToggle.checked);
 
 type WaterControlDefinition = {
   key: keyof WaterShaderParameters;
@@ -201,6 +205,33 @@ function setGridVisible(visible: boolean): void {
   renderer.setGridVisible(visible);
 }
 
+function setBaseColorVisible(visible: boolean): void {
+  baseColorToggle.checked = visible;
+  renderer.setBaseColorVisible(visible);
+}
+
+function setZoomPreset(zoom: number): void {
+  camera.setZoom(zoom);
+  syncZoomPresetButtons();
+}
+
+function syncZoomPresetButtons(): void {
+  for (const button of zoomPresetButtons) {
+    const zoom = Number(button.dataset.zoom);
+    const active = Number.isFinite(zoom) && Math.abs(camera.zoom - zoom) < 0.001;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
+  }
+}
+
+for (const button of zoomPresetButtons) {
+  button.addEventListener("click", () => {
+    const zoom = Number(button.dataset.zoom);
+    if (Number.isFinite(zoom)) setZoomPreset(zoom);
+  });
+}
+syncZoomPresetButtons();
+
 applySeedButton.addEventListener("click", applySeed);
 seedInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") applySeed();
@@ -208,13 +239,24 @@ seedInput.addEventListener("keydown", (event) => {
 gridToggle.addEventListener("change", () => {
   setGridVisible(gridToggle.checked);
 });
+baseColorToggle.addEventListener("change", () => {
+  setBaseColorVisible(baseColorToggle.checked);
+});
 waterShaderToggle.addEventListener("change", () => {
   setWaterShaderEnabled(waterShaderToggle.checked);
 });
 window.addEventListener("keydown", (event) => {
-  if (event.repeat || event.code !== "KeyG") return;
-  if (event.target instanceof HTMLInputElement) return;
-  setGridVisible(!renderer.isGridVisible());
+  if (event.repeat) return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLButtonElement) return;
+
+  if (event.code === "KeyG") {
+    setGridVisible(!renderer.isGridVisible());
+    return;
+  }
+
+  const presetIndex = ["Digit1", "Digit2", "Digit3", "Digit4"].indexOf(event.code);
+  const preset = ZOOM_PRESETS[presetIndex];
+  if (preset !== undefined) setZoomPreset(preset);
 });
 window.addEventListener("resize", resize);
 resize();
@@ -252,6 +294,7 @@ function frame(now: number): void {
   positionElement.textContent = `tile ${centerTileX.toLocaleString()}, ${centerTileY.toLocaleString()} · macro ${macroX}, ${macroY} · ${biomeName}`;
   chunksElement.textContent = `${chunkManager.loadedCount} macro regions`;
   zoomElement.textContent = `${Math.round(camera.zoom * 100)}%`;
+  syncZoomPresetButtons();
 
   requestAnimationFrame(frame);
 }
