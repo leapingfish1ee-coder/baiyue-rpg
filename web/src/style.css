@@ -51,6 +51,8 @@ button, input { font: inherit; }
   left: 14px;
   min-width: 320px;
   max-width: calc(100vw - 28px);
+  max-height: calc(100vh - 28px);
+  overflow: auto;
   padding: 12px;
   user-select: none;
 }
