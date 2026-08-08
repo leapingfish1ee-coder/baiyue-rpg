@@ -14,17 +14,26 @@ const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
 const SOURCE_TILE_PIXELS = 8;
 const MAX_SURFACE_CACHE = 32;
 const WORLD_BACKGROUND = "#000000";
+const BASE_TILE_MASK = [
+  "10101010",
+  "00000000",
+  "10101010",
+  "00000000",
+  "10101010",
+  "00000000",
+  "10101010",
+  "00000000",
+] as const;
 
 export class Renderer {
   /** Base art/grid size. World generation remains tile-coordinate based. */
   readonly tilePixels = 32;
   private readonly surfaces = new Map<string, HTMLCanvasElement>();
   private gridVisible = true;
-  private terrainSprites: HTMLCanvasElement[];
+  private readonly terrainSprites: HTMLCanvasElement[];
 
   constructor() {
-    this.terrainSprites = this.createTintedSprites(this.createFallbackMask());
-    void this.loadSpriteSheet();
+    this.terrainSprites = this.createTintedSprites(this.createBaseMask());
   }
 
   setGridVisible(visible: boolean): void {
@@ -81,41 +90,7 @@ export class Renderer {
     this.cleanupSurfaces(chunks);
   }
 
-  private loadSpriteSheet(): Promise<void> {
-    const source = `${import.meta.env.BASE_URL}sprites/terrain-sheet.png`;
-    return new Promise((resolve) => {
-      const image = new Image();
-      image.decoding = "async";
-      image.onload = () => {
-        const mask = document.createElement("canvas");
-        mask.width = SOURCE_TILE_PIXELS;
-        mask.height = SOURCE_TILE_PIXELS;
-        const context = mask.getContext("2d");
-        if (context) {
-          context.imageSmoothingEnabled = false;
-          context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
-          context.drawImage(
-            image,
-            0,
-            0,
-            SOURCE_TILE_PIXELS,
-            SOURCE_TILE_PIXELS,
-            0,
-            0,
-            SOURCE_TILE_PIXELS,
-            SOURCE_TILE_PIXELS,
-          );
-          this.terrainSprites = this.createTintedSprites(mask);
-          this.clear();
-        }
-        resolve();
-      };
-      image.onerror = () => resolve();
-      image.src = source;
-    });
-  }
-
-  private createFallbackMask(): HTMLCanvasElement {
+  private createBaseMask(): HTMLCanvasElement {
     const mask = document.createElement("canvas");
     mask.width = SOURCE_TILE_PIXELS;
     mask.height = SOURCE_TILE_PIXELS;
@@ -125,8 +100,10 @@ export class Renderer {
     context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
     context.fillStyle = "#ffffff";
     for (let y = 0; y < SOURCE_TILE_PIXELS; y += 1) {
+      const row = BASE_TILE_MASK[y];
+      if (!row) continue;
       for (let x = 0; x < SOURCE_TILE_PIXELS; x += 1) {
-        if ((x + y) % 2 === 0) context.fillRect(x, y, 1, 1);
+        if (row[x] === "1") context.fillRect(x, y, 1, 1);
       }
     }
     return mask;
