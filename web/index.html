@@ -92,17 +92,17 @@
 
       <aside id="texture-tool" hidden aria-label="Tile 纹理工具">
         <div class="texture-tool-head">
-          <strong>Tile 纹理工具</strong>
+          <strong>Tile 纹理工具 · Sheet v3</strong>
           <button id="texture-tool-close" type="button">关闭</button>
         </div>
-        <p class="texture-tool-note">上传 PNG / BMP / WebP。严格按 8×8 单元格从左到右、从上到下读取前 8 格。基础地形槽位 0–5：深水、浅水、沙地、土地、岩地、雪地；修饰槽位 6–7：草地、树林。任意纹理格都允许为空，不会自动复用其他格；草地/树林只叠加在土地基础层上。</p>
-        <label class="texture-file-label" for="texture-file">选择 spritesheet</label>
-        <input id="texture-file" type="file" accept="image/png,image/bmp,image/webp,image/*" />
-        <div id="texture-preview" class="texture-preview" aria-label="地形纹理预览"></div>
+        <p class="texture-tool-note">仅接受严格 48×16px PNG，按 8×8 单元形成 6列×2行。Row 0 固定为基础地形：深水、浅水、沙地、土地、岩地、雪地；Row 1 前两格固定为修饰：草地、树林；Row 1 后四格保留。纹理格允许透明/为空，不会自动复用其他格。</p>
+        <label class="texture-file-label" for="texture-file">选择 48×16 PNG spritesheet</label>
+        <input id="texture-file" type="file" accept="image/png" />
+        <div id="texture-preview" class="texture-preview" aria-label="Terrain Sheet v3 纹理布局预览"></div>
         <div class="texture-tool-actions">
           <button id="texture-reset" type="button">恢复默认</button>
         </div>
-        <div id="texture-status" class="texture-status" aria-live="polite">当前默认：深水、草地、树林槽位有纹理，其余槽位为空</div>
+        <div id="texture-status" class="texture-status" aria-live="polite">Terrain Sheet v3 · 48×16px · 6 基础 + 2 修饰 + 4 保留</div>
       </aside>
     </main>
     <script type="module" src="/src/main.ts"></script>
