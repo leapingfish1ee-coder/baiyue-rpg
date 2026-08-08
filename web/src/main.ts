@@ -1,17 +1,20 @@
 import "./style.css";
 import { Camera } from "./camera";
 import { ChunkManager } from "./chunk-manager";
-import { Renderer, TERRAIN_NAMES } from "./renderer";
+import { Renderer, TERRAIN_NAMES, TEXTURE_SLOT_NAMES } from "./renderer";
 import { TextureTool } from "./texture-tool";
 import {
   TextureShaderRenderer,
   type TextureShaderFailure,
+  type TextureShaderParameterName,
   type TextureShaderParameters,
 } from "./texture-shader";
 
-const TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v1";
+const TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v2";
+const LEGACY_TEXTURE_SHADER_STORAGE_KEY = "baiyue-rpg:texture-shader-params:v1";
 const LEGACY_WATER_SHADER_STORAGE_KEY = "baiyue-rpg:water-shader-params:v1";
 const ZOOM_PRESETS = [0.5, 1, 2, 4] as const;
+const TEXTURE_PARAMETER_KEYS = ["speed", "colorStrength", "colorFrequency"] as const satisfies readonly TextureShaderParameterName[];
 const queryParameters = new URLSearchParams(window.location.search);
 const FORCE_SHADER_OFF = queryParameters.get("shader") === "off";
 const shaderTimeValue = queryParameters.get("shaderTime");
@@ -52,83 +55,48 @@ renderer.setGridVisible(gridToggle.checked);
 renderer.setBaseColorVisible(baseColorToggle.checked);
 
 type TextureControlDefinition = {
-  key: keyof TextureShaderParameters;
+  slot: number;
+  key: TextureShaderParameterName;
   input: HTMLInputElement;
   output: HTMLOutputElement;
   decimals: number;
   suffix: string;
 };
 
-const textureControls: TextureControlDefinition[] = [
-  {
-    key: "deepSpeed",
-    input: requireElement<HTMLInputElement>("#texture-deep-speed"),
-    output: requireElement<HTMLOutputElement>("#texture-deep-speed-value"),
-    decimals: 2,
-    suffix: "×",
-  },
-  {
-    key: "deepColorStrength",
-    input: requireElement<HTMLInputElement>("#texture-deep-color"),
-    output: requireElement<HTMLOutputElement>("#texture-deep-color-value"),
-    decimals: 2,
-    suffix: "",
-  },
-  {
-    key: "shallowSpeed",
-    input: requireElement<HTMLInputElement>("#texture-shallow-speed"),
-    output: requireElement<HTMLOutputElement>("#texture-shallow-speed-value"),
-    decimals: 2,
-    suffix: "×",
-  },
-  {
-    key: "shallowColorStrength",
-    input: requireElement<HTMLInputElement>("#texture-shallow-color"),
-    output: requireElement<HTMLOutputElement>("#texture-shallow-color-value"),
-    decimals: 2,
-    suffix: "",
-  },
-  {
-    key: "surfaceSpeed",
-    input: requireElement<HTMLInputElement>("#texture-surface-speed"),
-    output: requireElement<HTMLOutputElement>("#texture-surface-speed-value"),
-    decimals: 2,
-    suffix: "×",
-  },
-  {
-    key: "surfaceColorStrength",
-    input: requireElement<HTMLInputElement>("#texture-surface-color"),
-    output: requireElement<HTMLOutputElement>("#texture-surface-color-value"),
-    decimals: 2,
-    suffix: "",
-  },
-  {
-    key: "decorationSpeed",
-    input: requireElement<HTMLInputElement>("#texture-decoration-speed"),
-    output: requireElement<HTMLOutputElement>("#texture-decoration-speed-value"),
-    decimals: 2,
-    suffix: "×",
-  },
-  {
-    key: "decorationColorStrength",
-    input: requireElement<HTMLInputElement>("#texture-decoration-color"),
-    output: requireElement<HTMLOutputElement>("#texture-decoration-color-value"),
-    decimals: 2,
-    suffix: "",
-  },
-  {
-    key: "colorFrequency",
-    input: requireElement<HTMLInputElement>("#texture-color-frequency"),
-    output: requireElement<HTMLOutputElement>("#texture-color-frequency-value"),
+function isTextureParameterName(value: string | undefined): value is TextureShaderParameterName {
+  return TEXTURE_PARAMETER_KEYS.includes(value as TextureShaderParameterName);
+}
+
+const textureControls: TextureControlDefinition[] = Array.from(
+  document.querySelectorAll<HTMLInputElement>("[data-texture-slot][data-texture-parameter]"),
+).map((input) => {
+  const slot = Number(input.dataset.textureSlot);
+  const key = input.dataset.textureParameter;
+  if (!Number.isInteger(slot) || slot < 0 || slot >= TEXTURE_SLOT_NAMES.length) {
+    throw new Error(`Invalid texture shader slot on #${input.id}: ${input.dataset.textureSlot ?? "missing"}`);
+  }
+  if (!isTextureParameterName(key)) {
+    throw new Error(`Invalid texture shader parameter on #${input.id}: ${key ?? "missing"}`);
+  }
+
+  return {
+    slot,
+    key,
+    input,
+    output: requireElement<HTMLOutputElement>(`#${input.id}-value`),
     decimals: 3,
-    suffix: "",
-  },
-];
+    suffix: key === "speed" ? "×" : "",
+  };
+});
+
+const expectedTextureControlCount = TEXTURE_SLOT_NAMES.length * TEXTURE_PARAMETER_KEYS.length;
+if (textureControls.length !== expectedTextureControlCount) {
+  throw new Error(`Expected ${expectedTextureControlCount} texture shader controls, found ${textureControls.length}.`);
+}
 
 function syncTextureParameterControls(): void {
-  const parameters = textureShader.getParameters();
   for (const control of textureControls) {
-    const value = parameters[control.key];
+    const value = textureShader.getSlotParameters(control.slot)[control.key];
     control.input.value = String(value);
     control.output.textContent = `${value.toFixed(control.decimals)}${control.suffix}`;
   }
@@ -142,20 +110,83 @@ function persistTextureParameters(): void {
   }
 }
 
-function restoreTextureParameters(): void {
-  let stored = localStorage.getItem(TEXTURE_SHADER_STORAGE_KEY);
-  if (!stored) {
-    stored = localStorage.getItem(LEGACY_WATER_SHADER_STORAGE_KEY);
-    if (stored) localStorage.removeItem(LEGACY_WATER_SHADER_STORAGE_KEY);
-  }
-  if (!stored) return;
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
 
-  try {
-    const parsed = JSON.parse(stored) as Partial<TextureShaderParameters>;
-    textureShader.setParameters(parsed);
-    persistTextureParameters();
-  } catch {
-    localStorage.removeItem(TEXTURE_SHADER_STORAGE_KEY);
+function migrateLegacyTextureParameters(parsed: unknown, waterOnly: boolean): TextureShaderParameters | null {
+  if (!parsed || typeof parsed !== "object") return null;
+  const legacy = parsed as Record<string, unknown>;
+  const migrated = textureShader.getParameters();
+
+  const sharedFrequency = finiteNumber(legacy.colorFrequency);
+  if (sharedFrequency !== null) {
+    const frequencySlots = waterOnly ? migrated.slots.slice(0, 2) : migrated.slots;
+    for (const profile of frequencySlots) profile.colorFrequency = sharedFrequency;
+  }
+
+  const deepSpeed = finiteNumber(legacy.deepSpeed);
+  const deepStrength = finiteNumber(legacy.deepColorStrength);
+  const shallowSpeed = finiteNumber(legacy.shallowSpeed);
+  const shallowStrength = finiteNumber(legacy.shallowColorStrength);
+  if (deepSpeed !== null && migrated.slots[0]) migrated.slots[0].speed = deepSpeed;
+  if (deepStrength !== null && migrated.slots[0]) migrated.slots[0].colorStrength = deepStrength;
+  if (shallowSpeed !== null && migrated.slots[1]) migrated.slots[1].speed = shallowSpeed;
+  if (shallowStrength !== null && migrated.slots[1]) migrated.slots[1].colorStrength = shallowStrength;
+
+  const surfaceSpeed = finiteNumber(legacy.surfaceSpeed);
+  const surfaceStrength = finiteNumber(legacy.surfaceColorStrength);
+  const surfaceSpeedMultipliers = [0.65, 1.0, 0.25, 0.55] as const;
+  const surfaceStrengthMultipliers = [0.75, 1.0, 0.45, 0.85] as const;
+  for (let offset = 0; offset < 4; offset += 1) {
+    const profile = migrated.slots[2 + offset];
+    if (!profile) continue;
+    if (surfaceSpeed !== null) profile.speed = surfaceSpeed * (surfaceSpeedMultipliers[offset] ?? 1);
+    if (surfaceStrength !== null) profile.colorStrength = surfaceStrength * (surfaceStrengthMultipliers[offset] ?? 1);
+  }
+
+  const decorationSpeed = finiteNumber(legacy.decorationSpeed);
+  const decorationStrength = finiteNumber(legacy.decorationColorStrength);
+  const decorationSpeedMultipliers = [1.10, 0.75] as const;
+  const decorationStrengthMultipliers = [1.0, 0.80] as const;
+  for (let offset = 0; offset < 2; offset += 1) {
+    const profile = migrated.slots[6 + offset];
+    if (!profile) continue;
+    if (decorationSpeed !== null) profile.speed = decorationSpeed * (decorationSpeedMultipliers[offset] ?? 1);
+    if (decorationStrength !== null) profile.colorStrength = decorationStrength * (decorationStrengthMultipliers[offset] ?? 1);
+  }
+
+  return migrated;
+}
+
+function restoreTextureParameters(): void {
+  const stored = localStorage.getItem(TEXTURE_SHADER_STORAGE_KEY);
+  if (stored) {
+    try {
+      textureShader.setParameters(JSON.parse(stored) as Partial<TextureShaderParameters>);
+      return;
+    } catch {
+      localStorage.removeItem(TEXTURE_SHADER_STORAGE_KEY);
+    }
+  }
+
+  for (const legacyKey of [LEGACY_TEXTURE_SHADER_STORAGE_KEY, LEGACY_WATER_SHADER_STORAGE_KEY]) {
+    const legacyStored = localStorage.getItem(legacyKey);
+    if (!legacyStored) continue;
+    try {
+      const migrated = migrateLegacyTextureParameters(
+        JSON.parse(legacyStored),
+        legacyKey === LEGACY_WATER_SHADER_STORAGE_KEY,
+      );
+      if (migrated) {
+        textureShader.setParameters(migrated);
+        persistTextureParameters();
+      }
+      localStorage.removeItem(legacyKey);
+      return;
+    } catch {
+      localStorage.removeItem(legacyKey);
+    }
   }
 }
 
@@ -233,8 +264,8 @@ syncTextureParameterControls();
 for (const control of textureControls) {
   control.input.addEventListener("input", () => {
     const value = Number(control.input.value);
-    textureShader.setParameters({ [control.key]: value } as Partial<TextureShaderParameters>);
-    const actual = textureShader.getParameters()[control.key];
+    textureShader.setSlotParameters(control.slot, { [control.key]: value });
+    const actual = textureShader.getSlotParameters(control.slot)[control.key];
     control.output.textContent = `${actual.toFixed(control.decimals)}${control.suffix}`;
     persistTextureParameters();
   });
