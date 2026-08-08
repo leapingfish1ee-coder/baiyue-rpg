@@ -3,6 +3,7 @@ import type { ChunkManager } from "./chunk-manager";
 import {
   BASE_TERRAIN_COUNT,
   SOURCE_TILE_PIXELS,
+  TERRAIN_BASE_COLORS,
   TERRAIN_COLORS,
   TEXTURE_SLOT_NAMES,
   type Renderer,
@@ -26,6 +27,20 @@ export type TextureShaderFailure = {
   kind: TextureShaderFailureKind;
   message: string;
 };
+
+export const WATER_VISUAL_BASELINE_VERSION = "b67e8bad260b3816447e067fcedd2524da0c46f3";
+
+export const WATER_VISUAL_BASELINE_GLSL = `
+    vec3 baseColor = deep ? u_deepBase : u_shallowBase;
+    vec3 fullColor = deep ? u_deepColor : u_shallowColor;
+    vec3 ambientColor = mix(baseColor * 1.05, fullColor * 0.52, colorNoise);
+
+    vec3 overlayColor = mix(ambientColor, textureColor, textureAlpha);
+    float ambientAlpha = deep ? 0.16 : 0.20;
+    float overlayAlpha = mix(ambientAlpha + colorNoise * 0.07, 0.94, textureAlpha);
+
+    outColor = vec4(overlayColor, overlayAlpha);
+`;
 
 export const DEFAULT_TEXTURE_SHADER_PARAMETERS: Readonly<TextureShaderParameters> = Object.freeze({
   deepSpeed: 0.18,
@@ -105,6 +120,8 @@ flat in int v_slot;
 
 uniform float u_time;
 uniform sampler2DArray u_textureAtlas;
+uniform vec3 u_deepBase;
+uniform vec3 u_shallowBase;
 uniform vec3 u_deepColor;
 uniform vec3 u_shallowColor;
 uniform float u_speed[8];
@@ -171,45 +188,34 @@ float textureColorNoise(vec2 p, float timeValue) {
 }
 
 void main() {
+  bool deep = v_slot == 0;
+  bool water = deep || v_slot == 1;
+
   vec2 localFloat = clamp(floor(v_uv * float(TILE_SIZE)), vec2(0.0), vec2(7.0));
   ivec2 localTexel = ivec2(localFloat);
   vec2 worldTexel = v_worldTile * float(TILE_SIZE) + localFloat;
   vec4 textureSample = texelFetch(u_textureAtlas, ivec3(localTexel, v_slot), 0);
   float textureAlpha = textureSample.a;
-  bool water = v_slot == 0 || v_slot == 1;
-
-  if (!water && textureAlpha < 0.001) discard;
-  if (water && u_baseEnabled < 0.5 && textureAlpha < 0.001) discard;
 
   float colorNoise = textureColorNoise(
     worldTexel * u_colorFrequency,
     u_time * u_speed[v_slot]
   );
-  float signedModulation = (colorNoise * 2.0 - 1.0) * u_colorStrength[v_slot];
-  float magnitude = abs(signedModulation);
-  if (magnitude < 0.002) discard;
-
-  bool brighten = signedModulation >= 0.0;
+  float brightness = 1.0 + (colorNoise * 2.0 - 1.0) * u_colorStrength[v_slot];
+  vec3 textureColor = textureSample.rgb * brightness;
 
   if (water) {
-    vec3 waterColor = v_slot == 0 ? u_deepColor : u_shallowColor;
-    vec3 overlayColor = brighten
-      ? mix(waterColor, vec3(1.0), 0.25)
-      : vec3(0.0);
-    float areaAlpha = u_baseEnabled >= 0.5 ? magnitude * 0.42 : 0.0;
-    float textureModAlpha = textureAlpha * magnitude * 0.62;
-    float overlayAlpha = clamp(max(areaAlpha, textureModAlpha), 0.0, 0.28);
-    if (overlayAlpha < 0.001) discard;
-    outColor = vec4(overlayColor, overlayAlpha);
+    if (u_baseEnabled < 0.5) {
+      if (textureAlpha < 0.001) discard;
+      outColor = vec4(textureColor, textureAlpha);
+      return;
+    }
+${WATER_VISUAL_BASELINE_GLSL}
     return;
   }
 
-  vec3 overlayColor = brighten
-    ? mix(textureSample.rgb, vec3(1.0), 0.35)
-    : vec3(0.0);
-  float overlayAlpha = clamp(textureAlpha * magnitude * 0.55, 0.0, 0.20);
-  if (overlayAlpha < 0.001) discard;
-  outColor = vec4(overlayColor, overlayAlpha);
+  if (textureAlpha < 0.001) discard;
+  outColor = vec4(textureColor, textureAlpha);
 }
 `;
 
@@ -279,6 +285,8 @@ export class TextureShaderRenderer {
 
       gl.useProgram(this.program);
       gl.uniform1i(gl.getUniformLocation(this.program, "u_textureAtlas"), 0);
+      this.setColorUniform(gl, this.program, "u_deepBase", TERRAIN_BASE_COLORS[0]);
+      this.setColorUniform(gl, this.program, "u_shallowBase", TERRAIN_BASE_COLORS[1]);
       this.setColorUniform(gl, this.program, "u_deepColor", TERRAIN_COLORS[0]);
       this.setColorUniform(gl, this.program, "u_shallowColor", TERRAIN_COLORS[1]);
 
