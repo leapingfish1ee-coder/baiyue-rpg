@@ -40,6 +40,7 @@ uniform vec2 u_camera;
 uniform vec2 u_viewport;
 uniform float u_zoom;
 uniform float u_tilePixels;
+uniform float u_tileArtPixels;
 
 out vec2 v_uv;
 flat out vec2 v_worldTile;
@@ -56,7 +57,7 @@ vec2 cornerForVertex(int id) {
 
 void main() {
   vec2 corner = cornerForVertex(gl_VertexID);
-  vec2 worldPixel = (a_worldTile + corner) * u_tilePixels;
+  vec2 worldPixel = a_worldTile * u_tilePixels + corner * u_tileArtPixels;
   vec2 screen = (worldPixel - u_camera) * u_zoom + u_viewport * 0.5;
   vec2 clip = vec2(
     screen.x / u_viewport.x * 2.0 - 1.0,
@@ -90,6 +91,7 @@ uniform float u_shallowSpeed;
 uniform float u_deepColorStrength;
 uniform float u_shallowColorStrength;
 uniform float u_colorFrequency;
+uniform float u_baseEnabled;
 
 out vec4 outColor;
 
@@ -104,7 +106,6 @@ float hash12(vec2 p) {
 float valueNoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);
-  // Quintic interpolation keeps first and second derivatives smooth at lattice edges.
   f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   float a = hash12(i);
   float b = hash12(i + vec2(1.0, 0.0));
@@ -168,13 +169,17 @@ void main() {
     u_time * speed
   );
   float brightness = 1.0 + (colorNoise * 2.0 - 1.0) * colorStrength;
+  vec3 textureColor = textureSample.rgb * brightness;
+  float textureAlpha = textureSample.a;
+
+  if (u_baseEnabled < 0.5) {
+    outColor = vec4(textureColor, textureAlpha * 0.94);
+    return;
+  }
 
   vec3 baseColor = deep ? u_deepBase : u_shallowBase;
   vec3 fullColor = deep ? u_deepColor : u_shallowColor;
-  vec3 textureColor = textureSample.rgb * brightness;
   vec3 ambientColor = mix(baseColor * 1.05, fullColor * 0.52, colorNoise);
-
-  float textureAlpha = textureSample.a;
   vec3 overlayColor = mix(ambientColor, textureColor, textureAlpha);
   float ambientAlpha = deep ? 0.16 : 0.20;
   float overlayAlpha = mix(ambientAlpha + colorNoise * 0.07, 0.94, textureAlpha);
@@ -321,12 +326,14 @@ export class WaterShaderRenderer {
     gl.uniform2f(gl.getUniformLocation(program, "u_viewport"), this.cssWidth, this.cssHeight);
     gl.uniform1f(gl.getUniformLocation(program, "u_zoom"), camera.zoom);
     gl.uniform1f(gl.getUniformLocation(program, "u_tilePixels"), renderer.tilePixels);
+    gl.uniform1f(gl.getUniformLocation(program, "u_tileArtPixels"), renderer.tileArtPixels);
     gl.uniform1f(gl.getUniformLocation(program, "u_time"), timeSeconds);
     gl.uniform1f(gl.getUniformLocation(program, "u_deepSpeed"), this.parameters.deepSpeed);
     gl.uniform1f(gl.getUniformLocation(program, "u_shallowSpeed"), this.parameters.shallowSpeed);
     gl.uniform1f(gl.getUniformLocation(program, "u_deepColorStrength"), this.parameters.deepColorStrength);
     gl.uniform1f(gl.getUniformLocation(program, "u_shallowColorStrength"), this.parameters.shallowColorStrength);
     gl.uniform1f(gl.getUniformLocation(program, "u_colorFrequency"), this.parameters.colorFrequency);
+    gl.uniform1f(gl.getUniformLocation(program, "u_baseEnabled"), renderer.isBaseColorVisible() ? 1 : 0);
 
     gl.bindVertexArray(this.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
