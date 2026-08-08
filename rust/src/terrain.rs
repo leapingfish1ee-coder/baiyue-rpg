@@ -45,7 +45,7 @@ pub fn macro_cell_biome(world_seed: u64, macro_x: i64, macro_y: i64) -> Terrain 
 
 pub fn generate_chunk(world_seed: u64, chunk_x: i64, chunk_y: i64) -> Vec<u8> {
     let fields = NoiseFields::new(world_seed);
-    let macro_neighborhood = MacroNeighborhood::new(world_seed, chunk_x, chunk_y, &fields);
+    let macro_neighborhood = MacroNeighborhood::new(chunk_x, chunk_y, &fields);
     let mut output = vec![0u8; CHUNK_AREA];
 
     let base_x = chunk_x

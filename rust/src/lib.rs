@@ -3,6 +3,7 @@ mod macro_world;
 mod noise;
 mod terrain;
 
+use macro_world::{edge_contract, EdgeDirection};
 use wasm_bindgen::prelude::*;
 
 pub const GENERATOR_VERSION: u32 = 2;
@@ -21,6 +22,14 @@ pub fn chunk_size() -> u32 {
 #[wasm_bindgen]
 pub fn macro_cell_biome(seed: u64, macro_x: i64, macro_y: i64) -> u8 {
     terrain::macro_cell_biome(seed, macro_x, macro_y) as u8
+}
+
+/// Return the shared deterministic signature for one macro-cell edge.
+/// Direction: 0=N, 1=E, 2=S, 3=W.
+#[wasm_bindgen]
+pub fn macro_edge_signature(seed: u64, macro_x: i64, macro_y: i64, direction: u8) -> u64 {
+    let direction = EdgeDirection::from_u8(direction).expect("direction must be 0..=3");
+    edge_contract(seed, macro_x, macro_y, direction).signature
 }
 
 /// Generate one macro pixel expanded into a 64×64 playable semantic TileMap region.

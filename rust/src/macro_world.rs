@@ -35,6 +35,18 @@ pub enum EdgeDirection {
     West,
 }
 
+impl EdgeDirection {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::North),
+            1 => Some(Self::East),
+            2 => Some(Self::South),
+            3 => Some(Self::West),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EdgeContract {
     /// Stable shared signature for a pair of adjacent macro cells.
@@ -42,15 +54,39 @@ pub struct EdgeContract {
     pub signature: u64,
 }
 
-pub struct MacroNeighborhood {
+pub fn edge_contract(
     world_seed: u64,
+    macro_x: i64,
+    macro_y: i64,
+    direction: EdgeDirection,
+) -> EdgeContract {
+    let (neighbor_x, neighbor_y) = match direction {
+        EdgeDirection::North => (macro_x, macro_y - 1),
+        EdgeDirection::East => (macro_x + 1, macro_y),
+        EdgeDirection::South => (macro_x, macro_y + 1),
+        EdgeDirection::West => (macro_x - 1, macro_y),
+    };
+
+    EdgeContract {
+        signature: hash_edge(
+            world_seed,
+            EDGE_TAG,
+            macro_x,
+            macro_y,
+            neighbor_x,
+            neighbor_y,
+        ),
+    }
+}
+
+pub struct MacroNeighborhood {
     center_x: i64,
     center_y: i64,
     cells: [MacroCell; 9],
 }
 
 impl MacroNeighborhood {
-    pub fn new(world_seed: u64, center_x: i64, center_y: i64, fields: &NoiseFields) -> Self {
+    pub fn new(center_x: i64, center_y: i64, fields: &NoiseFields) -> Self {
         let mut cells = [MacroCell::generate(fields, center_x, center_y); 9];
         let mut index = 0usize;
         for dy in -1..=1 {
@@ -61,34 +97,9 @@ impl MacroNeighborhood {
         }
 
         Self {
-            world_seed,
             center_x,
             center_y,
             cells,
-        }
-    }
-
-    pub fn center(&self) -> MacroCell {
-        self.cells[4]
-    }
-
-    pub fn edge_contract(&self, direction: EdgeDirection) -> EdgeContract {
-        let (neighbor_x, neighbor_y) = match direction {
-            EdgeDirection::North => (self.center_x, self.center_y - 1),
-            EdgeDirection::East => (self.center_x + 1, self.center_y),
-            EdgeDirection::South => (self.center_x, self.center_y + 1),
-            EdgeDirection::West => (self.center_x - 1, self.center_y),
-        };
-
-        EdgeContract {
-            signature: hash_edge(
-                self.world_seed,
-                EDGE_TAG,
-                self.center_x,
-                self.center_y,
-                neighbor_x,
-                neighbor_y,
-            ),
         }
     }
 
@@ -151,18 +162,16 @@ mod tests {
     #[test]
     fn neighborhood_center_matches_macro_sample() {
         let fields = NoiseFields::new(42);
-        let neighborhood = MacroNeighborhood::new(42, -3, 9, &fields);
-        let (elevation, moisture) = fields.sample_macro(-3, 9);
-        let center = neighborhood.center();
-        assert_eq!(center.elevation, elevation);
-        assert_eq!(center.moisture, moisture);
+        let neighborhood = MacroNeighborhood::new(-3, 9, &fields);
+        let expected = fields.sample_macro(-3, 9);
+        assert_eq!(neighborhood.sample_macro_position(-2.5, 9.5), expected);
     }
 
     #[test]
     fn adjacent_neighborhoods_agree_on_shared_boundary_field() {
         let fields = NoiseFields::new(1234);
-        let left = MacroNeighborhood::new(1234, 0, 0, &fields);
-        let right = MacroNeighborhood::new(1234, 1, 0, &fields);
+        let left = MacroNeighborhood::new(0, 0, &fields);
+        let right = MacroNeighborhood::new(1, 0, &fields);
 
         for step in 0..=16 {
             let y = step as f64 / 16.0;
@@ -175,12 +184,9 @@ mod tests {
 
     #[test]
     fn edge_contract_is_shared_by_both_sides() {
-        let fields = NoiseFields::new(99);
-        let left = MacroNeighborhood::new(99, -1, 2, &fields);
-        let right = MacroNeighborhood::new(99, 0, 2, &fields);
         assert_eq!(
-            left.edge_contract(EdgeDirection::East),
-            right.edge_contract(EdgeDirection::West)
+            edge_contract(99, -1, 2, EdgeDirection::East),
+            edge_contract(99, 0, 2, EdgeDirection::West)
         );
     }
 }
