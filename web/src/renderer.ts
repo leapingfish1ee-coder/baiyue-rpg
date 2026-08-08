@@ -85,7 +85,7 @@ export class Renderer {
   private terrainSprites: HTMLCanvasElement[];
   private gridVisible = true;
   private baseColorVisible = true;
-  private waterShaderEnabled = false;
+  private textureShaderEnabled = false;
   private textureRevision = 0;
 
   constructor() {
@@ -111,14 +111,14 @@ export class Renderer {
     return this.baseColorVisible;
   }
 
-  setWaterShaderEnabled(enabled: boolean): void {
-    if (this.waterShaderEnabled === enabled) return;
-    this.waterShaderEnabled = enabled;
+  setTextureShaderEnabled(enabled: boolean): void {
+    if (this.textureShaderEnabled === enabled) return;
+    this.textureShaderEnabled = enabled;
     this.clear();
   }
 
-  isWaterShaderEnabled(): boolean {
-    return this.waterShaderEnabled;
+  isTextureShaderEnabled(): boolean {
+    return this.textureShaderEnabled;
   }
 
   setTerrainMasks(masks: readonly CanvasImageSource[]): void {
@@ -311,11 +311,10 @@ export class Renderer {
         context.fillRect(tileX, tileY, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
       }
 
-      const shaderOwnsWaterTexture = this.waterShaderEnabled && (baseTerrainId === 0 || baseTerrainId === 1);
       const baseSprite = this.terrainSprites[baseTerrainId];
-      if (!shaderOwnsWaterTexture && baseSprite) context.drawImage(baseSprite, tileX, tileY);
+      if (!this.textureShaderEnabled && baseSprite) context.drawImage(baseSprite, tileX, tileY);
 
-      if (decorationId > 0) {
+      if (decorationId > 0 && !this.textureShaderEnabled) {
         const decorationSpriteIndex = BASE_TERRAIN_COUNT + decorationId - 1;
         const decorationSprite = this.terrainSprites[decorationSpriteIndex];
         if (decorationSprite) context.drawImage(decorationSprite, tileX, tileY);
