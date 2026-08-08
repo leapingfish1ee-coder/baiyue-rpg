@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Baiyue Lighting Lab</title>
+  </head>
+  <body>
+    <main id="lighting-lab">
+      <canvas id="lighting-canvas" aria-label="Global lighting and cloud shadow experiment"></canvas>
+
+      <section id="lab-panel">
+        <div class="lab-head">
+          <div>
+            <div class="lab-kicker">Baiyue Rendering Lab</div>
+            <h1>全局光照 / 云影实验</h1>
+          </div>
+          <a href="../">返回主地图</a>
+        </div>
+
+        <p class="lab-copy">这是独立视觉实验页，不改主地图渲染链。左半边可显示当前材质基准，右半边显示 HDR-style 曝光与世界坐标云影后的结果。</p>
+
+        <div class="preset-row" role="group" aria-label="光照预设">
+          <button type="button" data-preset="clear">晴朗</button>
+          <button type="button" data-preset="scattered" class="is-active">晴间多云</button>
+          <button type="button" data-preset="dramatic">厚云强光</button>
+        </div>
+
+        <fieldset id="lab-controls">
+          <label>
+            <span>曝光 EV</span>
+            <input id="exposure" type="range" min="-6" max="6" step="0.05" value="0.65" />
+            <output id="exposure-value">+0.65</output>
+          </label>
+          <label>
+            <span>云密度</span>
+            <input id="cloud-density" type="range" min="0" max="1" step="0.01" value="0.58" />
+            <output id="cloud-density-value">0.58</output>
+          </label>
+          <label>
+            <span>云影强度</span>
+            <input id="shadow-strength" type="range" min="0" max="0.95" step="0.01" value="0.52" />
+            <output id="shadow-strength-value">0.52</output>
+          </label>
+          <label>
+            <span>云尺度</span>
+            <input id="cloud-scale" type="range" min="0.001" max="0.03" step="0.0005" value="0.0065" />
+            <output id="cloud-scale-value">0.0065</output>
+          </label>
+          <label>
+            <span>边缘柔度</span>
+            <input id="softness" type="range" min="0.01" max="0.35" step="0.01" value="0.12" />
+            <output id="softness-value">0.12</output>
+          </label>
+          <label>
+            <span>云细节</span>
+            <input id="detail" type="range" min="0" max="1" step="0.01" value="0.42" />
+            <output id="detail-value">0.42</output>
+          </label>
+          <label>
+            <span>风速</span>
+            <input id="wind-speed" type="range" min="0" max="3" step="0.02" value="0.34" />
+            <output id="wind-speed-value">0.34</output>
+          </label>
+          <label>
+            <span>风向</span>
+            <input id="wind-direction" type="range" min="0" max="360" step="1" value="28" />
+            <output id="wind-direction-value">28°</output>
+          </label>
+        </fieldset>
+
+        <div class="lab-toggles">
+          <label><input id="compare" type="checkbox" checked /> 左右对比</label>
+          <label><input id="animate" type="checkbox" checked /> 云层移动</label>
+        </div>
+
+        <div class="lab-note">拖拽平移 · 滚轮缩放。云影在绝对世界坐标中计算，不会贴在屏幕上。EV=0 且云密度=0 时为中性光照。</div>
+        <div id="lab-status" role="status">初始化 WebGL2…</div>
+      </section>
+    </main>
+    <script type="module" src="../src/lighting-lab.ts"></script>
+  </body>
+</html>
