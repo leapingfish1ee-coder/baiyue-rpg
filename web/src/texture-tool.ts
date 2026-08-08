@@ -7,9 +7,29 @@ import {
   TEXTURE_SLOT_NAMES,
 } from "./renderer";
 
-const STORAGE_KEY = "baiyue-rpg:terrain-sheet:v2";
+const STORAGE_KEY = "baiyue-rpg:terrain-sheet:v3";
+const LEGACY_STORAGE_KEYS = ["baiyue-rpg:terrain-sheet:v2"] as const;
 const MAX_STORED_DATA_URL_LENGTH = 1_500_000;
-const MAX_IMAGE_DIMENSION = 4096;
+
+const SHEET_COLUMNS = 6;
+const SHEET_ROWS = 2;
+const SHEET_WIDTH = SHEET_COLUMNS * SOURCE_TILE_PIXELS;
+const SHEET_HEIGHT = SHEET_ROWS * SOURCE_TILE_PIXELS;
+const RESERVED_SLOT_COUNT = 4;
+
+// Baiyue Terrain Sheet v3 uses physical cell positions instead of reading the
+// first eight cells of an arbitrary sheet. Row 0 is BaseTerrain. Row 1 starts
+// with Decoration and leaves the remaining four cells reserved for expansion.
+const TEXTURE_SLOT_POSITIONS: ReadonlyArray<readonly [number, number]> = [
+  [0, 0], // DeepWater
+  [1, 0], // Water
+  [2, 0], // Sand
+  [3, 0], // Land
+  [4, 0], // Rock
+  [5, 0], // Snow
+  [0, 1], // Grass decoration
+  [1, 1], // Grove decoration
+];
 
 export interface TextureToolElements {
   toggleButton: HTMLButtonElement;
@@ -44,10 +64,12 @@ export class TextureTool {
   }
 
   async restoreStoredSheet(): Promise<void> {
+    for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
+
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) return;
     try {
-      await this.applyDataUrl(stored, "已恢复浏览器内保存的纹理", false);
+      await this.applyDataUrl(stored, "已恢复浏览器内保存的 v3 纹理", false);
     } catch (error: unknown) {
       localStorage.removeItem(STORAGE_KEY);
       this.setStatus(`保存的纹理无法读取：${this.errorMessage(error)}`, true);
@@ -62,6 +84,9 @@ export class TextureTool {
   private async applyFile(file: File): Promise<void> {
     this.setStatus(`读取 ${file.name}…`);
     try {
+      if (file.type && file.type !== "image/png") {
+        throw new Error("Baiyue Terrain Sheet v3 仅接受 PNG 文件");
+      }
       const dataUrl = await this.readFileAsDataUrl(file);
       await this.applyDataUrl(dataUrl, file.name, true);
     } catch (error: unknown) {
@@ -73,18 +98,20 @@ export class TextureTool {
 
   private async applyDataUrl(dataUrl: string, label: string, persist: boolean): Promise<void> {
     const image = await this.loadImage(dataUrl);
-    if (image.naturalWidth > MAX_IMAGE_DIMENSION || image.naturalHeight > MAX_IMAGE_DIMENSION) {
-      throw new Error(`图像最大支持 ${MAX_IMAGE_DIMENSION}×${MAX_IMAGE_DIMENSION}px`);
+    if (image.naturalWidth !== SHEET_WIDTH || image.naturalHeight !== SHEET_HEIGHT) {
+      throw new Error(
+        `Baiyue Terrain Sheet v3 必须严格为 ${SHEET_WIDTH}×${SHEET_HEIGHT}px（6×2 个 8×8 单元）`,
+      );
     }
 
-    const columns = Math.floor(image.naturalWidth / SOURCE_TILE_PIXELS);
-    const rows = Math.floor(image.naturalHeight / SOURCE_TILE_PIXELS);
-    if (columns < 1 || rows < 1) {
-      throw new Error(`图像必须至少为 ${SOURCE_TILE_PIXELS}×${SOURCE_TILE_PIXELS}px`);
-    }
+    const masks = this.extractMasks(image);
+    const baseVisibleCount = masks
+      .slice(0, BASE_TERRAIN_COUNT)
+      .reduce((count, mask) => count + (this.isMaskVisible(mask) ? 1 : 0), 0);
+    const decorationVisibleCount = masks
+      .slice(BASE_TERRAIN_COUNT)
+      .reduce((count, mask) => count + (this.isMaskVisible(mask) ? 1 : 0), 0);
 
-    const masks = this.extractMasks(image, columns, rows);
-    const visibleCount = masks.reduce((count, mask) => count + (this.isMaskVisible(mask) ? 1 : 0), 0);
     this.renderer.setTerrainMasks(masks);
     this.renderPreviews();
 
@@ -104,15 +131,12 @@ export class TextureTool {
     }
 
     this.setStatus(
-      `${label} · ${image.naturalWidth}×${image.naturalHeight}px · 固定顺序读取 8 格，${visibleCount} 格非空${persistenceNote}`,
+      `${label} · Terrain Sheet v3 · ${SHEET_WIDTH}×${SHEET_HEIGHT}px · 基础 ${baseVisibleCount}/6 非空 · 修饰 ${decorationVisibleCount}/2 非空 · 4 格保留${persistenceNote}`,
     );
   }
 
-  private extractMasks(image: HTMLImageElement, columns: number, rows: number): HTMLCanvasElement[] {
-    const availableCount = columns * rows;
-    const masks: HTMLCanvasElement[] = [];
-
-    for (let index = 0; index < TEXTURE_SLOT_NAMES.length; index += 1) {
+  private extractMasks(image: HTMLImageElement): HTMLCanvasElement[] {
+    return TEXTURE_SLOT_POSITIONS.map(([column, row]) => {
       const canvas = document.createElement("canvas");
       canvas.width = SOURCE_TILE_PIXELS;
       canvas.height = SOURCE_TILE_PIXELS;
@@ -121,26 +145,20 @@ export class TextureTool {
       context.imageSmoothingEnabled = false;
       context.clearRect(0, 0, SOURCE_TILE_PIXELS, SOURCE_TILE_PIXELS);
 
-      if (index < availableCount) {
-        const sourceX = (index % columns) * SOURCE_TILE_PIXELS;
-        const sourceY = Math.floor(index / columns) * SOURCE_TILE_PIXELS;
-        context.drawImage(
-          image,
-          sourceX,
-          sourceY,
-          SOURCE_TILE_PIXELS,
-          SOURCE_TILE_PIXELS,
-          0,
-          0,
-          SOURCE_TILE_PIXELS,
-          SOURCE_TILE_PIXELS,
-        );
-        this.normalizeMask(context);
-      }
-      masks.push(canvas);
-    }
-
-    return masks;
+      context.drawImage(
+        image,
+        column * SOURCE_TILE_PIXELS,
+        row * SOURCE_TILE_PIXELS,
+        SOURCE_TILE_PIXELS,
+        SOURCE_TILE_PIXELS,
+        0,
+        0,
+        SOURCE_TILE_PIXELS,
+        SOURCE_TILE_PIXELS,
+      );
+      this.normalizeMask(context);
+      return canvas;
+    });
   }
 
   private normalizeMask(context: CanvasRenderingContext2D): void {
@@ -178,24 +196,60 @@ export class TextureTool {
   }
 
   private buildPreviewSlots(): void {
+    this.previewCanvases.length = 0;
     this.elements.preview.replaceChildren();
-    for (let index = 0; index < TEXTURE_SLOT_NAMES.length; index += 1) {
-      const item = document.createElement("div");
-      item.className = "texture-preview-item";
 
-      const canvas = document.createElement("canvas");
-      canvas.width = SOURCE_TILE_PIXELS;
-      canvas.height = SOURCE_TILE_PIXELS;
-      canvas.className = "texture-preview-canvas";
-      canvas.setAttribute("aria-label", `${TEXTURE_SLOT_NAMES[index]}纹理预览`);
-      this.previewCanvases.push(canvas);
-
-      const label = document.createElement("span");
-      const layer = index < BASE_TERRAIN_COUNT ? "基础" : "修饰";
-      label.textContent = `${layer} ${index} ${TEXTURE_SLOT_NAMES[index]}`;
-      item.append(canvas, label);
-      this.elements.preview.append(item);
+    this.appendPreviewHeading("基础地形 · Row 0");
+    for (let index = 0; index < BASE_TERRAIN_COUNT; index += 1) {
+      this.appendPreviewSlot(index);
     }
+
+    this.appendPreviewHeading("修饰地形 · Row 1");
+    for (let index = BASE_TERRAIN_COUNT; index < TEXTURE_SLOT_NAMES.length; index += 1) {
+      this.appendPreviewSlot(index);
+    }
+    for (let reserved = 0; reserved < RESERVED_SLOT_COUNT; reserved += 1) {
+      this.appendReservedSlot(reserved + 2);
+    }
+  }
+
+  private appendPreviewHeading(text: string): void {
+    const heading = document.createElement("div");
+    heading.className = "texture-preview-heading";
+    heading.textContent = text;
+    this.elements.preview.append(heading);
+  }
+
+  private appendPreviewSlot(index: number): void {
+    const item = document.createElement("div");
+    item.className = "texture-preview-item";
+
+    const canvas = document.createElement("canvas");
+    canvas.width = SOURCE_TILE_PIXELS;
+    canvas.height = SOURCE_TILE_PIXELS;
+    canvas.className = "texture-preview-canvas";
+    canvas.setAttribute("aria-label", `${TEXTURE_SLOT_NAMES[index]}纹理预览`);
+    this.previewCanvases[index] = canvas;
+
+    const label = document.createElement("span");
+    label.textContent = `${index} ${TEXTURE_SLOT_NAMES[index]}`;
+    item.append(canvas, label);
+    this.elements.preview.append(item);
+  }
+
+  private appendReservedSlot(column: number): void {
+    const item = document.createElement("div");
+    item.className = "texture-preview-item is-reserved";
+
+    const marker = document.createElement("div");
+    marker.className = "texture-preview-reserved-marker";
+    marker.textContent = "—";
+    marker.setAttribute("aria-label", `Row 1 Column ${column} 保留槽位`);
+
+    const label = document.createElement("span");
+    label.textContent = "保留";
+    item.append(marker, label);
+    this.elements.preview.append(item);
   }
 
   private renderPreviews(): void {
@@ -217,9 +271,10 @@ export class TextureTool {
 
   private reset(): void {
     localStorage.removeItem(STORAGE_KEY);
+    for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
     this.renderer.resetTerrainTextures();
     this.renderPreviews();
-    this.setStatus("已恢复项目默认纹理：深水、草地、树林槽位有默认图案，其余槽位为空");
+    this.setStatus("已恢复项目默认纹理 · Terrain Sheet v3：深水、草地、树林有默认图案，其余槽位为空");
   }
 
   private setStatus(message: string, isError = false): void {
@@ -232,7 +287,7 @@ export class TextureTool {
       const image = new Image();
       image.decoding = "async";
       image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error("浏览器无法解码该图像格式"));
+      image.onerror = () => reject(new Error("浏览器无法解码该图像"));
       image.src = source;
     });
   }
