@@ -2,9 +2,11 @@
 
 ## 当前实施包
 
-[阶段 1：探索垂直切片实施包](phase-1-exploration-vertical-slice.md)是当前第一个端到端工程阶段，状态为 **Ready for implementation**，前提是 [Decision-0003](../decisions/0003-first-playable-slice-baseline.md) 已 Accepted。它要求交付可运行的新世界创建、探索任务、自由向量移动、永久揭雾、Exploration XP、IndexedDB 存档、离线推进、map-first UI 和 Debug 分离，不接受空模块或测试桩作为完成。
+[阶段 1：探索垂直切片实施包](phase-1-exploration-vertical-slice.md)是当前第一个端到端工程阶段，[Decision-0003](../decisions/0003-first-playable-slice-baseline.md) 已 Accepted。当前工作区已实现新世界创建、探索任务、自由向量移动、永久揭雾、Exploration XP、IndexedDB 存档、离线推进、map-first UI 和 Debug 分离；准确范围见[当前状态](../product/current-state.md)。
 
-开始编码前，专项必须先补齐并交叉链接 stable ID grammar、Worker/UI unions 与 command idempotency、IndexedDB keyPath、canonical backup/error code 和 benchmark fixture。新增 unit、integration、E2E 与 performance scripts 后，必须把准确命令补充到本页和[验证标准](validation.md)。当前仓库仍未实现该切片。
+编码前契约已补齐并交叉链接 stable ID grammar、Worker/UI unions 与 command idempotency、IndexedDB keyPath、canonical backup/error code 和 benchmark fixture。
+
+上述门禁的 Gate A 已由[阶段 1 运行时契约](../specifications/phase-1-runtime-contracts.md)和 `npm run test:contract` 封闭。Gate B 已由 `npm run fixture:anchor` 使用正式 anchor search 和实际 WASM generator v3 封闭。两项门禁完成不表示 `168h` performance fixture 已通过。实现必须直接复用其中的版本、字段、keyPath、错误码和静态 fixture，不得建立第二套隐式协议。
 
 ## 环境
 
@@ -13,7 +15,7 @@
 - Rust target `wasm32-unknown-unknown`。
 - `wasm-pack 0.15.0`，与 Pages workflow 一致。
 
-当前仓库没有 `Cargo.lock` 或前端 lockfile。`Cargo.toml` 和 `package.json` 虽写明直接依赖版本，完整依赖图仍未锁定；不要把当前安装描述为跨构建可复现。
+Rust 以 `rust/Cargo.lock` 锁定依赖图，并把 generator 直接依赖精确固定为 `wasm-bindgen 0.2.127` 与 `fastnoise-lite 1.1.1`。前端以 `web/package-lock.json` 锁定依赖图；`idb` 精确固定为 `8.0.3`。`wasm:build` 使用 lockfile。必须使用 Node.js 22 或更高版本执行 npm scripts；更旧的 Node 不是受支持环境。
 
 ## 首次准备
 
@@ -44,11 +46,21 @@ npm run dev
 | `cd web && npm run wasm:build` | release 模式构建 Rust → WebAssembly |
 | `cd web && npm run typecheck` | `tsc --noEmit` |
 | `cd web && npm run build` | `wasm:build`、TypeScript 检查、Vite production build |
+| `cd web && npm run fixture:anchor` | 使用已构建的实际 WASM generator 重新搜索并核对固定 Gate B anchor |
+| `cd web && npm run test:contract` | Node test runner 验证 Gate A 静态 schema fixture；不启动浏览器或 server |
+| `cd web && npm run test:unit` | Node test runner 运行纯 gameplay/fixed-point、broker 与 ChunkManager fixture；不启动浏览器 |
+| `cd web && npm run test:worker` | 重建 WASM 和专用 `dist-worker-test`，再由 Playwright 单 worker 运行 direct-engine/真实 module Worker/broker/generator 等价与协议失败 fixture |
+| `cd web && npm run test:persistence` | Playwright 单 worker 运行真实 IndexedDB、Web Lock、backup 和故障 fixture |
+| `cd web && npm run test:e2e` | Playwright 单 worker通过 production preview 运行阶段 1 用户流程 |
+| `cd web && npm run test:performance` | 重建专用 Worker 产物，由 Playwright 验证 `168h` cap、claim 提交和 15 秒 wall-clock 门槛；完整 continuous 三次 benchmark 仍列为技术债 |
 | `cd web && npm run test:smoke` | Playwright 启动 production preview 并运行 Chromium tests |
+
+`test:worker`、`test:persistence` 和 `test:performance` 设置专用 build 标志后才把 `worker-harness.html` 加入 `dist-worker-test`；正式 `npm run build` 不生成或发布该入口。`test:e2e` 和 `test:smoke` 使用 production preview。浏览器测试需要先安装 Chromium。
 
 ## 入口
 
-- 主地图：Vite 根路径。
+- 产品探索地图：Vite 根路径。
+- 渲染诊断：`/world-debug.html`。产品构建不在产品 UI 中显示入口。
 - Lighting Lab：`/lighting-lab/`。
 - `?shader=off`：强制完整 Canvas2D。
 - `?shaderTime=<seconds>`：冻结 shader 动画时间。

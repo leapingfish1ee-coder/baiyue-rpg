@@ -1,12 +1,13 @@
 import type { Camera } from "./camera";
 import type { Chunk, ChunkManager } from "./chunk-manager";
+import { BASE_TERRAIN_ID } from "./world-contract";
 
 export const BASE_TERRAIN_NAMES = ["深水", "浅水", "沙地", "土地", "岩地", "雪地"] as const;
 export const TERRAIN_NAMES = BASE_TERRAIN_NAMES;
 export const DECORATION_NAMES = ["草地", "树林"] as const;
 export const TEXTURE_SLOT_NAMES = [...BASE_TERRAIN_NAMES, ...DECORATION_NAMES] as const;
 export const BASE_TERRAIN_COUNT = BASE_TERRAIN_NAMES.length;
-export const LAND_TERRAIN_ID = 3;
+export const LAND_TERRAIN_ID = BASE_TERRAIN_ID.Land;
 
 export const TERRAIN_COLORS: ReadonlyArray<readonly [number, number, number]> = [
   [22, 63, 112],   // deep water

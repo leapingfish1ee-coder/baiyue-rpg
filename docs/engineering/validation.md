@@ -27,7 +27,7 @@ cargo run --release --example benchmark
 5. 确认相邻连续场、对称 `EdgeContract` 和访问顺序独立性。
 6. 更新世界生成、协议和版本文档。
 
-当前仓库没有固定 golden fixtures 或 native/WASM 对照 runner。涉及生成字节的下一项变更必须先补齐该门禁，不能用现有 unit tests 替代。
+仓库已提供固定 anchor/golden fixture 与 native/WASM 对照 runner。涉及生成字节的下一项变更仍须按现有版本规则更新并复验，不能只用普通 unit tests 替代。
 
 MVP 不迁移或保留旧生成器、旧世界和旧存档。`GENERATOR_VERSION` 与 golden 更新只证明变化有意。
 
@@ -37,10 +37,17 @@ MVP 不迁移或保留旧生成器、旧世界和旧存档。`GENERATOR_VERSION`
 cd web
 npm run typecheck
 npm run build
+npm run test:contract
+npm run fixture:anchor
+npm run test:unit
+npm run test:worker
+npm run test:persistence
+npm run test:e2e
+npm run test:performance
 npm run test:smoke
 ```
 
-`npm run build` 已包含 WASM release build 和 TypeScript 检查；仍单独运行 `typecheck`，便于更快定位类型错误。Playwright config 会启动 `npm run preview:test`，测试目标是 production preview，不需要另开 server。
+`npm run build` 已包含 WASM release build 和 TypeScript 检查；仍单独运行 `typecheck`，便于更快定位类型错误。`test:contract` 与 `test:unit` 只使用 Node test runner。`fixture:anchor` 需要 `wasm:build` 已生成实际 WASM，并核对 Gate B 固定起点。`test:worker` 使用专用 `dist-worker-test` 和 `preview:test-worker`；正式 build 不包含 harness。其余新增测试和 smoke 由 Playwright config 启动 `npm run preview:test`，目标是 production preview，不需要另开 server。准确 fixture 和职责见[开发说明](development.md)与[阶段 1 运行时契约](../specifications/phase-1-runtime-contracts.md)。
 
 Worker 或 protocol 变化还必须验证：
 

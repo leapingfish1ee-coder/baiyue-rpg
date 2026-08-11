@@ -8,7 +8,9 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: "index.html",
+        worldDebug: "world-debug.html",
         lightingLab: "lighting-lab/index.html",
+        ...(process.env.BAIYUE_TEST_HARNESS === "1" ? { workerHarness: "worker-harness.html" } : {}),
       },
     },
   },

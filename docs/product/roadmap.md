@@ -33,15 +33,52 @@
 
 ## 阶段 2：生活技能与任务扩展
 
-目标：在已运行的探索产品上增量加入生活技能、物品和剩余任务类别。
+阶段 2 的拆分顺序已确认。各子阶段必须继续复用阶段 1 的唯一 gameplay worker、`TaskIntent`、事件引擎、存档和产品 shell。
 
-- 在已有 `探索` 上加入 `采集`、`伐木`、`采矿`、`锻造`、`工艺`，以及对应等级曲线、内容准入和技能效果。
-- 在已有 Explore `TaskIntent` 上加入采集、伐木、采矿和生产任务；不另建任务状态机。狩猎随阶段 3 的敌人与战斗闭环进入范围。
-- 实现资源与生产行动、完整产出、任务计数和固定行动经验。
-- 实现定义型物品、库存、装备、工作站、路径成本目标索取和为任务服务的自动探索。
-- 扩展现有 Task drawer、Skills 和 bottom activity，不另建第二套产品 shell。
+### 阶段 2A：基础采集垂直切片
 
-真源见[技能成长](../requirements/skill-progression.md)、[自动任务](../requirements/automation-tasks.md)、[探索与目标索取](../requirements/exploration.md)和[玩法 UI](../requirements/gameplay-ui.md)。
+设计状态：**Ready for implementation**。设计与参数已经封板，不表示代码已经实现。
+
+目标：先用一个资源类型证明开放世界内容 placement、采集任务、行动结算、无容量库存、技能 XP 和 offline/reload 已形成真实闭环。
+
+- 使用 absolute `32×32 tiles` content cell 和营地保证层放置野生纤维。
+- 初始 observation 内保证一个已知节点，近营地保证两个额外可达节点，使 Task drawer 不需要显示未知类型。
+- 在唯一 `TaskIntent` 中加入目标必填的采集任务，并复用路径成本目标索取与自动探索。
+- 只加入 `fiber` 数量、采集技能、一次行动后耗尽和世界时间重生。
+- 产品 UI 只增加 Task、Skills、Inventory 和地图资源状态所需的最小入口。
+- 不进入伐木、采矿、生产、工具、装备、敌人、战斗或叙事。
+
+直接实施包见[阶段 2A：基础采集垂直切片](../engineering/phase-2a-gathering-vertical-slice.md)和已接受的 [Decision-0004](../decisions/0004-gathering-content-placement.md)。
+
+### 阶段 2B：伐木与采矿
+
+状态：**Planned**。尚无实施包，也不表示已实现。
+
+目标：在 2A 已验证的 resource placement、target acquisition、action settlement 和库存边界上增加工具型资源行动。
+
+- 加入软木树、地表石和浅层铜矿内容。
+- 加入伐木、采矿技能和对应 `TaskIntent` 分支。
+- 加入本阶段实际使用的斧、镐和最小装备边界。
+- 验证缺少工具的稳定等待、工具速度来源和不同资源重生。
+- 不加入生产配方、工作站、敌人、战斗或叙事。
+
+阶段 2A 完成验收后再起草阶段 2B 实施包，不在 2A 代码中预留空模块。
+
+### 阶段 2C：生产与装备
+
+状态：**Planned**。尚无实施包，也不表示已实现。
+
+目标：在已有资源、库存和工具边界上加入首批生产链与可逆装备软专精。
+
+- 加入锻造、工艺和生产 `TaskIntent`。
+- 加入首批已确认配方、材料检查、handcraft 与 compatible station 索取。
+- 加入生产周期原子结算和本阶段实际使用的装备槽与属性。
+- 保持缺料等待，不自动采集、购买或切换任务。
+- 不加入敌人、战斗、狩猎或叙事。
+
+阶段 2B 完成验收后再起草阶段 2C 实施包，不提前建立配方或装备兼容层。
+
+阶段 2 各子阶段继续服从[技能成长](../requirements/skill-progression.md)、[自动任务](../requirements/automation-tasks.md)、[探索与目标索取](../requirements/exploration.md)、[物品与装备系统](../requirements/item-equipment.md)和[玩法 UI](../requirements/gameplay-ui.md)。
 
 ## 阶段 3：近战、潜行与死亡闭环
 

@@ -1,0 +1,154 @@
+{
+  "schema": "baiyue-rpg.phase-1-contract-fixture/v1",
+  "gateStatus": {
+    "gateA": "complete_schema_fixture_passed",
+    "gateB": "complete_anchor_materialized"
+  },
+  "versions": {
+    "gameplayProtocol": 1,
+    "dbSchema": 1,
+    "saveSchema": 1,
+    "gameRules": 1,
+    "content": 1,
+    "exportFormat": 1
+  },
+  "backupVersionPolicy": {
+    "fieldEncoding": "u32",
+    "normalExportEqualsRuntime": true,
+    "incompatibleExportPreservesMeta": true,
+    "dbSchemaUsesActualDatabaseVersion": true,
+    "importRejectsMismatchBeforeChecksum": true,
+    "migrationAllowed": false
+  },
+  "terrainContract": {
+    "chunkSize": 64,
+    "chunkArea": 4096,
+    "generatedBytes": 8192,
+    "navUnitsPerTile": "1024",
+    "baseTerrainIds": { "DeepWater": 0, "Water": 1, "Sand": 2, "Land": 3, "Rock": 4, "Snow": 5 },
+    "decorationIds": { "None": 0, "Grass": 1, "Grove": 2 },
+    "decorationRequiresLand": true,
+    "passableIds": [2, 3, 4, 5]
+  },
+  "bounds": {
+    "seedMin": "0",
+    "seedMax": "18446744073709551615",
+    "tileMin": "-2147483648",
+    "tileMax": "2147483647",
+    "navMin": "-2199023255552",
+    "navMax": "2199023255551",
+    "chunkMin": "-33554432",
+    "chunkMax": "33554431",
+    "exactUnsignedMax": "170141183460469231731687303715884105727",
+    "safeIntMin": -9007199254740991,
+    "safeIntMax": 9007199254740991,
+    "safeUintMax": 9007199254740991,
+    "u32Max": 4294967295,
+    "fogBytes": 512,
+    "terrainBytes": 4096,
+    "maxRoutePoints": 65536,
+    "maxBackupBytes": 33554432,
+    "offlineCapMs": "604800000"
+  },
+  "idComponentBounds": {
+    "sessionNonceHex": { "min": "0000000000000000", "max": "ffffffffffffffff" },
+    "requestCommandTaskCounter": { "min": 0, "max": 9007199254740991 },
+    "eventWorldTimeAndOrdinal": { "min": "0", "max": "170141183460469231731687303715884105727" },
+    "terrainEpochAndOrdinal": { "min": 0, "max": 9007199254740991 },
+    "claimBaseRevision": { "min": 1, "max": 9007199254740991 },
+    "claimTargetWallClockMs": { "min": 0, "max": 9007199254740991 }
+  },
+  "idPatterns": {
+    "saveId": "^save:local$",
+    "requestId": "^req:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$",
+    "commandId": "^cmd:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$",
+    "taskId": "^task:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$",
+    "eventId": "^evt:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$",
+    "terrainRequestId": "^terrain:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$",
+    "claimId": "^claim:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$",
+    "chunkKey": "^(?:0|-?[1-9][0-9]*),(?:0|-?[1-9][0-9]*)$",
+    "placementId": "^place:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:(?:0|-?[1-9][0-9]*):(?:0|-?[1-9][0-9]*)$",
+    "diagnosticId": "^diag:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]{16}$"
+  },
+  "mainToWorker": {
+    "initialize": ["type", "protocolVersion", "requestId", "generatorVersion", "wallClockMs"],
+    "command": ["type", "protocolVersion", "requestId", "command"],
+    "terrain-result": ["type", "protocolVersion", "terrainRequestId", "gameplayEpoch", "chunkKey", "chunkX", "chunkY", "generatorVersion", "baseTerrain"],
+    "terrain-error": ["type", "protocolVersion", "terrainRequestId", "gameplayEpoch", "code", "transient", "diagnosticId"],
+    "flush": ["type", "protocolVersion", "requestId", "wallClockMs"],
+    "shutdown": ["type", "protocolVersion", "requestId"]
+  },
+  "workerToMain": {
+    "worker-ready": ["type", "protocolVersion"],
+    "request-result": ["type", "protocolVersion", "requestId", "operation", "status", "readModelRevision", "saveRevision", "error"],
+    "protocol-error": ["type", "protocolVersion", "requestId", "error", "readModelRevision", "saveRevision"],
+    "terrain-request": ["type", "protocolVersion", "terrainRequestId", "gameplayEpoch", "readModelRevision", "seed", "chunkKey", "chunkX", "chunkY"],
+    "read-model": ["type", "protocolVersion", "readModel"],
+    "command-result": ["type", "protocolVersion", "requestId", "commandId", "status", "readModelRevision", "saveRevision", "error"],
+    "offline-progress": ["type", "protocolVersion", "claimId", "processedDurationMs", "creditedDurationMs", "sliceMaxMs"],
+    "export-ready": ["type", "protocolVersion", "requestId", "commandId", "saveRevision", "filename", "backupUtf8"],
+    "fatal": ["type", "protocolVersion", "error", "readModelRevision", "saveRevision"]
+  },
+  "offlineClockSkew": {
+    "rawElapsedType": "signed-safe-integer",
+    "backward": { "clockSkew": "backward", "creditedDurationMs": "0", "discardedDurationMs": "0", "worldTimeRollsBack": false, "uiWarningRequired": true },
+    "normal": { "clockSkew": "none", "creditedCapMs": "604800000" }
+  },
+  "receiptPolicy": {
+    "persistedCommandTypes": ["CreateWorld", "SetTask", "CancelTask"],
+    "terminalStatus": "accepted",
+    "reasonCode": null,
+    "memoryOnlyCommandTypes": ["ExportSave", "ImportSave", "ResetSave"],
+    "importPreservesAuthoritativeRevision": true
+  },
+  "closedErrorCodes": {
+    "activity": ["TaskCompleted", "NoReachableTargetOrFrontier", "DestinationUnreachable", "storage_write_failed", "incompatible_save", "active_in_other_tab", "undefined_failure"],
+    "protocol": ["protocol/unknown_message", "protocol/invalid_message", "protocol/version_mismatch"],
+    "lifecycle": ["save/incompatible_version", "storage/unavailable", "storage/write_failed", "storage/quota_exceeded", "storage/integrity_failed", "platform/web_locks_unavailable", "active_in_other_tab", "undefined_failure"],
+    "command": ["command/id_conflict", "command/invalid_seed", "command/invalid_destination", "command/confirmation_required", "save/not_found", "save/incompatible_version", "storage/unavailable", "storage/write_failed", "storage/quota_exceeded", "storage/integrity_failed", "platform/web_locks_unavailable", "active_in_other_tab", "backup/file_too_large", "backup/invalid_utf8", "backup/invalid_json", "backup/invalid_product", "backup/incompatible_export_version", "backup/incompatible_version", "backup/invalid_shape", "backup/invalid_id", "backup/non_canonical_decimal", "backup/coordinate_out_of_range", "backup/unsafe_integer", "backup/duplicate_chunk", "backup/checksum_mismatch", "integrity/quantity_overflow", "undefined_failure"],
+    "fatal": ["storage/unavailable", "storage/write_failed", "storage/quota_exceeded", "storage/integrity_failed", "platform/web_locks_unavailable", "active_in_other_tab", "save/incompatible_version", "undefined_failure"]
+  },
+  "commands": {
+    "CreateWorld": ["type", "commandId", "seed", "seedSource", "wallClockMs"],
+    "SetTask": ["type", "commandId", "task", "wallClockMs"],
+    "CancelTask": ["type", "commandId", "wallClockMs"],
+    "ExportSave": ["type", "commandId", "wallClockMs"],
+    "ImportSave": ["type", "commandId", "backupUtf8", "confirmed", "wallClockMs"],
+    "ResetSave": ["type", "commandId", "confirmed", "wallClockMs"]
+  },
+  "transferables": {
+    "terrain-result.baseTerrain": { "kind": "ArrayBuffer", "exactBytes": 4096 },
+    "ImportSave.backupUtf8": { "kind": "ArrayBuffer", "maxBytes": 33554432 },
+    "export-ready.backupUtf8": { "kind": "ArrayBuffer", "maxBytes": 33554432 },
+    "read-model.map.revealedBase64": { "kind": "padded-base64", "decodedBytes": 512 }
+  },
+  "database": {
+    "name": "baiyue-rpg-gameplay",
+    "version": 1,
+    "stores": {
+      "meta": { "keyPath": "save_id", "fields": ["save_id", "current_revision", "created_wall_clock_ms", "committed_wall_clock_ms", "committed_world_time_ms", "db_schema_version", "save_schema_version", "game_rules_version", "content_version", "generator_version", "integrity_algorithm", "core_checksum_sha256", "world_chunk_count"] },
+      "core": { "keyPath": "save_id", "fields": ["save_id", "revision", "seed", "world_time_ms", "position", "hp", "exploration", "task", "execution", "command_receipts", "next_event_ordinal", "last_offline_report"] },
+      "world_chunks": { "keyPath": "chunk_key", "fields": ["chunk_key", "chunk_x", "chunk_y", "revealed_bits", "revision", "record_checksum_sha256"] },
+      "resume_claim": { "keyPath": "save_id", "fields": ["save_id", "claim_id", "base_revision", "base_world_time_ms", "from_wall_clock_ms", "target_wall_clock_ms", "credited_duration_ms", "processing_status", "diagnostic_id"] }
+    }
+  },
+  "benchmark": {
+    "fixtureId": "phase1-168h-continuous-v1",
+    "seed": "20260809",
+    "generatorVersion": 3,
+    "creditedDurationMs": "604800000",
+    "start": { "x": "512", "y": "512" },
+    "anchorTile": { "x": "0", "y": "0" },
+    "anchorFixtureChecksum": "e05d5016e56b946b0cd541110e7dd5e23d9b7adb559f13842edfd8c175647939",
+    "runner": {
+      "os": "ubuntu-24.04",
+      "node": "22.18.0",
+      "playwright": "1.60.0",
+      "chromiumRevision": "1223",
+      "chromiumVersion": "148.0.7778.96",
+      "testWorkers": 1,
+      "cpuLimit": 2,
+      "memoryMiB": 1024
+    }
+  }
+}

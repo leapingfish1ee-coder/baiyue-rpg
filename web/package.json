@@ -4,16 +4,28 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "wasm:build": "wasm-pack build ../rust --target web --out-dir ../web/public/wasm --out-name terrain_wasm --release",
+    "wasm:build": "wasm-pack build ../rust --target web --out-dir ../web/public/wasm --out-name terrain_wasm --release -- --locked",
     "dev": "npm run wasm:build && vite",
     "preview:test": "vite preview --host 127.0.0.1 --port 4173",
+    "preview:test-worker": "vite preview --outDir dist-worker-test --host 127.0.0.1 --port 4173",
     "typecheck": "tsc --noEmit",
     "build": "npm run wasm:build && tsc --noEmit && vite build",
-    "test:smoke": "playwright test"
+    "build:test-worker": "npm run wasm:build && tsc --noEmit && BAIYUE_TEST_HARNESS=1 vite build --outDir dist-worker-test",
+    "fixture:anchor": "node tests/materialize-phase1-anchor.mjs",
+    "test:contract": "node --test tests/contract-schema.test.mjs tests/contract-runtime.test.mjs",
+    "test:unit": "node --test tests/gameplay-unit.test.mjs tests/gameplay-broker.test.mjs",
+    "test:worker": "npm run build:test-worker && BAIYUE_WORKER_TEST=1 playwright test tests/gameplay-worker.spec.ts --workers=1",
+    "test:persistence": "npm run build:test-worker && BAIYUE_WORKER_TEST=1 playwright test tests/gameplay-persistence.spec.ts --workers=1",
+    "test:e2e": "playwright test tests/gameplay-e2e.spec.ts --workers=1",
+    "test:performance": "npm run build:test-worker && BAIYUE_WORKER_TEST=1 playwright test tests/gameplay-performance.spec.ts --workers=1",
+    "test:smoke": "playwright test tests/gameplay-e2e.spec.ts tests/debug-panel.spec.ts tests/global-lighting.spec.ts tests/render-fallback.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.60.0",
     "typescript": "7.0.2",
     "vite": "8.1.5"
+  },
+  "dependencies": {
+    "idb": "8.0.3"
   }
 }

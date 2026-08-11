@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 
-import type { GenerateChunkRequest, WorkerMessage } from "./protocol";
+import { isGenerateChunkRequest, type WorkerMessage } from "./protocol.ts";
+import { GENERATED_CHUNK_BYTES, RUNTIME_CHUNK_SIZE } from "./world-contract";
 
 type TerrainWasmModule = {
   default: (wasmUrl?: string | URL) => Promise<unknown>;
@@ -25,9 +26,13 @@ const wasmPromise = loadWasm();
 
 wasmPromise
   .then((wasm) => {
+    const chunkSize = wasm.chunk_size();
+    if (chunkSize !== RUNTIME_CHUNK_SIZE) {
+      throw new Error(`WASM chunk size ${chunkSize} does not match shared contract ${RUNTIME_CHUNK_SIZE}`);
+    }
     const message: WorkerMessage = {
       type: "ready",
-      chunkSize: wasm.chunk_size(),
+      chunkSize,
       generatorVersion: wasm.generator_version(),
     };
     scope.postMessage(message);
@@ -40,9 +45,13 @@ wasmPromise
     scope.postMessage(message);
   });
 
-scope.onmessage = async (event: MessageEvent<GenerateChunkRequest>) => {
+scope.onmessage = async (event: MessageEvent<unknown>) => {
   const request = event.data;
-  if (request.type !== "generate") return;
+  if (!isGenerateChunkRequest(request)) {
+    const message: WorkerMessage = { type: "error", message: "invalid generate request" };
+    scope.postMessage(message);
+    return;
+  }
 
   try {
     const wasm = await wasmPromise;
@@ -50,6 +59,9 @@ scope.onmessage = async (event: MessageEvent<GenerateChunkRequest>) => {
     const chunkX = BigInt(request.chunkX);
     const chunkY = BigInt(request.chunkY);
     const wasmTiles = wasm.generate_chunk(seed, chunkX, chunkY);
+    if (wasmTiles.byteLength !== GENERATED_CHUNK_BYTES) {
+      throw new Error(`WASM chunk payload must be ${GENERATED_CHUNK_BYTES} bytes, got ${wasmTiles.byteLength}`);
+    }
     const macroBiome = wasm.macro_cell_biome(seed, chunkX, chunkY);
 
     // Transfer an owned buffer. Do not transfer WebAssembly.Memory itself.

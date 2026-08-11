@@ -24,18 +24,18 @@ test("production lighting defaults match the approved scattered-cloud lab preset
 });
 
 test("main map initializes the cloud lighting stage in real WebGL2", async ({ page }) => {
-  await page.goto("./?shaderTime=10");
+  await page.goto("./world-debug.html?shaderTime=10");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced", { timeout: 30_000 });
   await expect(page.locator("#texture-effects")).toHaveAttribute("data-lighting-stage", "cloud");
   await expect(page.locator("#status")).toContainText("WASM v", { timeout: 30_000 });
 });
 
 test("diagnostic lighting modes preserve the enhanced renderer", async ({ page }) => {
-  await page.goto("./?shaderTime=10&lighting=neutral");
+  await page.goto("./world-debug.html?shaderTime=10&lighting=neutral");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced", { timeout: 30_000 });
   await expect(page.locator("#texture-effects")).toHaveAttribute("data-lighting-stage", "neutral");
 
-  await page.goto("./?shaderTime=10&lighting=off");
+  await page.goto("./world-debug.html?shaderTime=10&lighting=off");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced", { timeout: 30_000 });
   await expect(page.locator("#texture-effects")).toHaveAttribute("data-lighting-stage", "off");
 });

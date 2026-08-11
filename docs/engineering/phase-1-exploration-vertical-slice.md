@@ -1,9 +1,9 @@
 # 阶段 1：探索垂直切片实施包
 
-- 状态：Ready for implementation
+- 状态：Implemented；验证结果和剩余技术债以[当前状态](../product/current-state.md)及验证记录为准
 - 前提：[Decision-0003](../decisions/0003-first-playable-slice-baseline.md) 已 Accepted
 - 适用范围：首个可运行的端到端 gameplay 阶段
-- 当前实现：尚未实现；以[当前状态](../product/current-state.md)为准
+- 当前实现：阶段 1 探索主路径已落地；以[当前状态](../product/current-state.md)为准
 
 ## 交付目标
 
@@ -61,6 +61,8 @@ MVP 中的新规则直接替换旧规则。专项不得为本包创建旧任务�
 产品 UI 不显示上述系统的入口、disabled placeholder、空面板或灰色未来功能。
 
 ## 编码前门禁
+
+精确实现契约见[阶段 1 运行时契约](../specifications/phase-1-runtime-contracts.md)。Gate A 已通过 `npm run test:contract` 封闭 ID、Worker/UI union、command 幂等、IndexedDB schema、backup/error code 和 benchmark runner。Gate B 已通过 `npm run fixture:anchor` 使用正式搜索与实际 WASM generator v3 物化 `168h` fixture 的 start/checksum。两项编码前门禁均已闭合；这不表示 `168h` performance fixture 已运行或通过。
 
 专项必须先在 `docs/` 写入并交叉链接以下实现级契约。它们只能细化 Accepted 边界，不能改变产品方向：
 

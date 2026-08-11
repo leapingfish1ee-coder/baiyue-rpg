@@ -26,7 +26,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: "npm run preview:test",
+    command: process.env.BAIYUE_WORKER_TEST === "1" ? "npm run preview:test-worker" : "npm run preview:test",
     url: serverUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

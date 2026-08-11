@@ -71,7 +71,7 @@ test("all eight texture slots keep the current visual defaults but have wider in
 });
 
 test("all eight texture slots expose and persist independent dynamic parameters", async ({ page }) => {
-  await page.goto("./?shaderTime=10");
+  await page.goto("./world-debug.html?shaderTime=10");
 
   const controls = page.locator("[data-texture-slot][data-texture-parameter]");
   await expect(controls).toHaveCount(24);
@@ -131,7 +131,7 @@ test("Canvas2D remains fully usable when WebGL2 cannot be created", async ({ pag
     };
   });
 
-  await page.goto("./");
+  await page.goto("./world-debug.html");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "fallback");
   await expect(page.locator("#texture-shader-toggle")).toBeDisabled();
   await expect(page.locator("#render-mode")).toContainText("Canvas2D");
@@ -143,7 +143,7 @@ test("WebGL2 shader initializes, then context loss restores complete Canvas2D te
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
 
-  await page.goto("./?shaderTime=10");
+  await page.goto("./world-debug.html?shaderTime=10");
   await waitForWorld(page);
 
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced");

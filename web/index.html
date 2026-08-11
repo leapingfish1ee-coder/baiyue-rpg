@@ -4,121 +4,104 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
-    <title>Infinite TileMap Terrain MVP</title>
+    <title>Baiyue RPG · 探索</title>
   </head>
   <body>
-    <main id="app">
-      <canvas id="world" aria-label="Infinite generated terrain"></canvas>
-      <canvas id="texture-effects" hidden aria-hidden="true"></canvas>
+    <main id="game-app">
+      <canvas id="world" aria-label="百岳探索地图"></canvas>
 
-      <section id="hud" class="debug-panel" aria-label="World debug controls">
-        <header class="debug-panel-head">
-          <div class="debug-title-block">
-            <div class="debug-kicker">BAIYUE RPG</div>
-            <div class="debug-title-row">
-              <strong>World Debug</strong>
-              <span id="render-mode" class="debug-mode-badge" data-mode="canvas">Canvas2D</span>
-            </div>
+      <header class="game-header">
+        <div>
+          <span class="eyebrow">BAIYUE RPG</span>
+          <h1>雾中远行</h1>
+        </div>
+        <div class="header-status">
+          <span id="save-state" data-state="none">尚未建档</span>
+          <button id="system-toggle" type="button" aria-expanded="false" aria-controls="system-panel">存档</button>
+          <a id="debug-link" href="./world-debug.html" target="_blank" rel="noreferrer" hidden>Debug ↗</a>
+        </div>
+      </header>
+
+      <section id="onboarding" class="surface onboarding" aria-labelledby="onboarding-title">
+        <span class="eyebrow">新的旅程</span>
+        <h2 id="onboarding-title">从一粒种子开始探索</h2>
+        <p>世界只保存在这台设备。建档后，角色会从首个可站立位置出发。</p>
+        <label for="world-seed">世界 Seed</label>
+        <div class="seed-row">
+          <input id="world-seed" inputmode="numeric" value="20260809" spellcheck="false" />
+          <button id="create-world" class="primary" type="button">创建世界</button>
+        </div>
+        <p id="startup-message" class="message" aria-live="polite">正在连接本地世界…</p>
+      </section>
+
+      <aside id="journey-panel" class="surface journey-panel" hidden aria-label="探索状态">
+        <div class="player-row">
+          <span class="player-mark" aria-hidden="true"></span>
+          <div>
+            <strong>探索者</strong>
+            <span id="player-position">—</span>
           </div>
-          <div class="debug-head-actions">
-            <button id="debug-export" class="button-accent" type="button" title="导出当前 Seed、视图、纹理 Shader 与全局光照参数">导出 JSON</button>
-            <button id="debug-panel-collapse" class="button-icon" type="button" aria-expanded="true" aria-controls="debug-panel-body" title="收起 / 展开 Debug 面板">−</button>
-          </div>
-        </header>
+          <span id="activity-state" class="activity-pill">空闲</span>
+        </div>
+        <div class="xp-block">
+          <div><span id="level-label">探索 Lv.1</span><span id="xp-label">0 / 100 XP</span></div>
+          <progress id="xp-progress" value="0" max="100"></progress>
+        </div>
+        <dl class="journey-stats">
+          <div><dt>生命</dt><dd id="hp-label">100 / 100</dd></div>
+          <div><dt>已揭露</dt><dd id="revealed-count">0 格</dd></div>
+          <div><dt>观察半径</dt><dd id="radius-label">4 格</dd></div>
+          <div><dt>预计抵达</dt><dd id="eta-label">—</dd></div>
+        </dl>
+      </aside>
 
-        <div id="debug-panel-body" class="debug-panel-body">
-          <div class="debug-primary-grid">
-            <label class="seed-control" for="seed">
-              <span>Seed</span>
-              <input id="seed" type="text" value="20260808" spellcheck="false" />
-            </label>
-            <button id="apply-seed" type="button">应用 Seed</button>
-          </div>
-
-          <div class="debug-toolbar" aria-label="渲染快捷开关">
-            <label class="hud-toggle" for="grid-toggle">
-              <input id="grid-toggle" type="checkbox" checked />
-              <span>网格</span>
-            </label>
-            <label class="hud-toggle" for="base-color-toggle">
-              <input id="base-color-toggle" type="checkbox" checked />
-              <span>底色</span>
-            </label>
-            <label class="hud-toggle" for="texture-shader-toggle">
-              <input id="texture-shader-toggle" type="checkbox" checked />
-              <span>GPU</span>
-            </label>
-            <button id="texture-tool-toggle" type="button" aria-expanded="false" aria-controls="texture-tool">纹理工具</button>
-            <a class="debug-link" href="./lighting-lab/" target="_blank" rel="noreferrer">Lighting Lab ↗</a>
-          </div>
-
-          <div class="debug-zoom-row">
-            <span class="debug-inline-label">Zoom</span>
-            <div class="zoom-presets" role="group" aria-label="缩放快捷级数">
-              <button type="button" data-zoom="0.5" title="快捷键 1">50%</button>
-              <button type="button" data-zoom="1" title="快捷键 2">100%</button>
-              <button type="button" data-zoom="2" title="快捷键 3">200%</button>
-              <button type="button" data-zoom="4" title="快捷键 4">400%</button>
-            </div>
-          </div>
-
-          <div class="stats debug-stats">
-            <span id="status">WASM 初始化中</span>
-            <span id="position">tile 0, 0</span>
-            <span id="chunks">0 chunks</span>
-            <span id="zoom">100%</span>
-          </div>
-
-          <details id="lighting-parameter-panel" class="debug-section" open>
-            <summary>
-              <span>全局光照 / 云影</span>
-              <span class="summary-meta">8 params</span>
-            </summary>
-            <fieldset id="lighting-parameter-fields" class="debug-fieldset">
-              <div id="lighting-parameter-grid" class="lighting-parameter-grid"></div>
-              <div class="debug-section-actions">
-                <span class="section-help">自动保存到本浏览器</span>
-                <button id="lighting-parameter-reset" type="button">恢复默认</button>
-              </div>
-            </fieldset>
-          </details>
-
-          <details id="texture-parameter-panel" class="debug-section">
-            <summary>
-              <span>纹理动态参数</span>
-              <span class="summary-meta">8 slots × 3</span>
-            </summary>
-            <fieldset id="texture-parameter-fields" class="debug-fieldset">
-              <div id="texture-parameter-table" class="texture-parameter-table"></div>
-              <div class="debug-section-actions">
-                <span class="section-help">速度 / 明暗 / 频率均独立</span>
-                <button id="texture-parameter-reset" type="button">恢复默认</button>
-              </div>
-            </fieldset>
-          </details>
-
-          <footer class="debug-footer">
-            <span>拖拽 / WASD · 滚轮 · 1–4 Zoom · G 网格 · ` 收起面板</span>
-            <span id="debug-export-status" class="debug-export-status" aria-live="polite">参数实时保存</span>
-          </footer>
+      <section id="destination-card" class="surface destination-card" hidden aria-live="polite">
+        <span class="eyebrow">目的地</span>
+        <strong id="destination-label">tile 0, 0</strong>
+        <div class="destination-fields">
+          <label>Tile X<input id="destination-x" inputmode="numeric" value="0" /></label>
+          <label>Tile Y<input id="destination-y" inputmode="numeric" value="0" /></label>
+        </div>
+        <div>
+          <button id="destination-clear" type="button">取消选择</button>
+          <button id="destination-confirm" class="primary" type="button">确认探索</button>
         </div>
       </section>
 
-      <aside id="texture-tool" hidden aria-label="Tile 纹理工具">
-        <div class="texture-tool-head">
-          <strong>Tile 纹理工具 · Sheet v3</strong>
-          <button id="texture-tool-close" type="button">关闭</button>
+      <nav id="task-bar" class="surface task-bar" hidden aria-label="探索操作">
+        <button id="explore-continuous" class="primary" type="button">
+          <span>持续探索</span><small>寻找最近的未知边界</small>
+        </button>
+        <button id="choose-destination" type="button">
+          <span>选择目的地</span><small>在地图上点选位置</small>
+        </button>
+        <button id="cancel-task" class="danger" type="button" hidden>
+          <span>取消任务</span><small>停在当前位置</small>
+        </button>
+      </nav>
+
+      <aside id="system-panel" class="surface system-panel" hidden aria-label="本地存档">
+        <div class="panel-head"><strong>本地存档</strong><button id="system-close" type="button" aria-label="关闭">×</button></div>
+        <p id="save-detail">所有进度仅保存在当前浏览器。</p>
+        <div class="system-actions">
+          <button id="export-save" type="button">导出备份</button>
+          <button id="import-save" type="button">导入备份</button>
+          <button id="reset-save" class="danger" type="button">重置存档</button>
         </div>
-        <p class="texture-tool-note">仅接受严格 48×16px PNG，按 8×8 单元形成 6列×2行。Row 0 固定为基础地形：深水、浅水、沙地、土地、岩地、雪地；Row 1 前两格固定为修饰：草地、树林；Row 1 后四格保留。纹理格允许透明/为空，不会自动复用其他格。</p>
-        <label class="texture-file-label" for="texture-file">选择 48×16 PNG spritesheet</label>
-        <input id="texture-file" type="file" accept="image/png" />
-        <div id="texture-preview" class="texture-preview" aria-label="Terrain Sheet v3 纹理布局预览"></div>
-        <div class="texture-tool-actions">
-          <button id="texture-reset" type="button">恢复默认</button>
-        </div>
-        <div id="texture-status" class="texture-status" aria-live="polite">Terrain Sheet v3 · 48×16px · 6 基础 + 2 修饰 + 4 保留</div>
+        <input id="import-file" type="file" accept="application/json,.json" hidden />
+        <p id="system-message" class="message" aria-live="polite"></p>
       </aside>
+
+      <aside id="offline-report" class="surface offline-report" hidden aria-live="polite">
+        <button id="offline-close" type="button" aria-label="关闭">×</button>
+        <span class="eyebrow">离线探索结算</span>
+        <strong id="offline-title">旅程继续了</strong>
+        <p id="offline-summary"></p>
+      </aside>
+
+      <div id="map-hint" hidden>点按地图选择目的地 · 拖拽平移 · 滚轮缩放</div>
+      <div id="toast" role="status" aria-live="polite"></div>
     </main>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/game.ts"></script>
   </body>
 </html>

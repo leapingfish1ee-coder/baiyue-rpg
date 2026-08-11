@@ -1,0 +1,157 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #f4f0e4;
+  background: #07100e;
+  font-synthesis: none;
+  --ink: #f4f0e4;
+  --muted: rgba(244, 240, 228, .64);
+  --line: rgba(239, 232, 210, .16);
+  --surface: rgba(12, 25, 21, .88);
+  --surface-solid: #10231d;
+  --accent: #dfb66a;
+  --accent-ink: #261b0a;
+  --danger: #e49a86;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body, #game-app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: #07100e; }
+button, input { font: inherit; }
+button, input, a { -webkit-tap-highlight-color: transparent; }
+button, a { color: inherit; }
+
+#game-app { position: relative; isolation: isolate; }
+#world {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #07100e;
+  image-rendering: pixelated;
+  cursor: grab;
+  touch-action: none;
+}
+#world.dragging { cursor: grabbing; }
+#game-app.is-choosing #world { cursor: crosshair; }
+
+.surface {
+  z-index: 3;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, .32);
+  backdrop-filter: blur(16px) saturate(1.15);
+}
+
+.game-header {
+  position: absolute;
+  z-index: 3;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 24px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(3, 10, 8, .8), transparent);
+}
+.game-header > * { pointer-events: auto; }
+.game-header h1 { margin: 2px 0 0; font-family: Georgia, serif; font-size: clamp(22px, 3vw, 34px); font-weight: 500; letter-spacing: .03em; }
+.eyebrow { display: block; font-size: 10px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--accent); }
+.header-status { display: flex; align-items: center; gap: 8px; }
+.header-status > span { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
+.header-status a { text-decoration: none; }
+
+button, .header-status a, input {
+  min-height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(34, 54, 46, .92);
+  color: var(--ink);
+}
+button, .header-status a { display: inline-flex; align-items: center; justify-content: center; padding: 0 14px; cursor: pointer; }
+button:hover, .header-status a:hover { border-color: rgba(239, 232, 210, .34); background: rgba(48, 72, 61, .96); }
+button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { cursor: wait; opacity: .5; }
+button.primary { border-color: rgba(223, 182, 106, .7); background: var(--accent); color: var(--accent-ink); font-weight: 750; }
+button.primary:hover { background: #edc67d; }
+button.danger { border-color: rgba(228, 154, 134, .35); color: #f5c1b2; }
+input { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-nums; }
+
+.onboarding {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(460px, calc(100vw - 32px));
+  padding: 26px;
+  transform: translate(-50%, -50%);
+}
+.onboarding h2 { margin: 7px 0 10px; font: 500 clamp(25px, 5vw, 38px)/1.08 Georgia, serif; }
+.onboarding > p { color: var(--muted); line-height: 1.6; }
+.onboarding label { display: block; margin: 22px 0 7px; font-size: 12px; color: var(--muted); }
+.seed-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.message { min-height: 1.4em; margin: 10px 0 0 !important; font-size: 12px; color: var(--muted); }
+.message[data-error="true"] { color: #f3ac98; }
+
+.journey-panel { position: absolute; top: 96px; left: 20px; width: min(310px, calc(100vw - 40px)); padding: 16px; }
+.player-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+.player-mark { width: 34px; height: 34px; border: 2px solid #f1d69f; border-radius: 50% 50% 46% 54%; background: radial-gradient(circle at 42% 38%, #fff8d8 0 11%, #d99c4d 13% 45%, #68492e 47% 100%); box-shadow: 0 0 0 4px rgba(223, 182, 106, .12); }
+.player-row div { display: grid; gap: 2px; }
+.player-row strong { font-size: 14px; }
+.player-row div span { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.activity-pill { padding: 4px 8px; border-radius: 999px; background: rgba(223, 182, 106, .12); font-size: 10px; color: #efd092; }
+.xp-block { margin-top: 16px; }
+.xp-block > div { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.xp-block > div span:last-child { color: var(--muted); }
+.xp-block progress { width: 100%; height: 6px; margin-top: 7px; overflow: hidden; border: 0; border-radius: 999px; background: rgba(255,255,255,.1); }
+.xp-block progress::-webkit-progress-bar { background: rgba(255,255,255,.1); }
+.xp-block progress::-webkit-progress-value { background: var(--accent); }
+.journey-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0 0; }
+.journey-stats div { padding-top: 10px; border-top: 1px solid var(--line); }
+.journey-stats dt { font-size: 9px; color: var(--muted); }
+.journey-stats dd { margin: 3px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+
+.task-bar { position: absolute; left: 50%; bottom: 22px; display: flex; gap: 8px; padding: 8px; transform: translateX(-50%); }
+.task-bar button { min-width: 165px; height: 56px; display: grid; align-content: center; gap: 2px; text-align: left; }
+.task-bar button span { font-size: 13px; font-weight: 700; }
+.task-bar button small { font-size: 9px; font-weight: 400; color: currentColor; opacity: .7; }
+
+.destination-card { position: absolute; left: 50%; bottom: 96px; min-width: 260px; padding: 14px; transform: translateX(-50%); text-align: center; }
+.destination-card strong { display: block; margin: 4px 0 12px; font-family: Georgia, serif; font-size: 20px; }
+.destination-card > div { display: flex; justify-content: center; gap: 7px; }
+.destination-card .destination-fields { display: grid; grid-template-columns: 1fr 1fr; margin-bottom: 9px; text-align: left; }
+.destination-fields label { display: grid; gap: 3px; font-size: 9px; color: var(--muted); }
+.destination-fields input { width: 110px; min-height: 34px; color: var(--ink); }
+
+.system-panel { position: absolute; top: 82px; right: 20px; width: min(340px, calc(100vw - 40px)); padding: 16px; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; }
+.panel-head button, .offline-report > button { width: 32px; min-height: 32px; padding: 0; }
+.system-panel > p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.system-actions { display: grid; gap: 7px; }
+
+.offline-report { position: absolute; right: 20px; bottom: 22px; width: min(360px, calc(100vw - 40px)); padding: 18px; }
+.offline-report > button { position: absolute; top: 10px; right: 10px; }
+.offline-report strong { display: block; margin: 7px 30px 5px 0; font: 500 20px Georgia, serif; }
+.offline-report p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+
+#map-hint { position: absolute; z-index: 3; left: 50%; top: 82px; padding: 8px 12px; border-radius: 999px; transform: translateX(-50%); background: rgba(6, 16, 13, .86); font-size: 11px; color: #f0d49e; pointer-events: none; }
+#toast { position: absolute; z-index: 4; left: 50%; top: 22px; max-width: min(560px, calc(100vw - 40px)); padding: 9px 14px; border-radius: 10px; transform: translate(-50%, -140%); background: #1a3028; box-shadow: 0 12px 30px rgba(0,0,0,.35); font-size: 12px; transition: transform .2s ease; }
+#toast.is-visible { transform: translate(-50%, 0); }
+
+@media (max-width: 720px) {
+  .game-header { padding: 14px; }
+  .game-header h1 { font-size: 21px; }
+  .header-status > span, .header-status a { display: none; }
+  .journey-panel { top: 76px; left: 12px; width: calc(100vw - 24px); }
+  .journey-stats { grid-template-columns: repeat(4, 1fr); }
+  .task-bar { bottom: 10px; width: calc(100vw - 20px); }
+  .task-bar button { min-width: 0; flex: 1; padding: 0 10px; }
+  .task-bar button small { display: none; }
+  .destination-card { bottom: 80px; }
+  .offline-report { right: 12px; bottom: 80px; }
+}

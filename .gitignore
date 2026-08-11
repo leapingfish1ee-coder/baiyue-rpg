@@ -2,6 +2,10 @@
 /rust/target
 /web/node_modules
 /web/dist
+/web/dist-worker-test
+/web/dist-persistence-test
+/web/test-results
+/web/playwright-report
 /web/public/wasm/*
 !/web/public/wasm/.gitkeep
 .DS_Store

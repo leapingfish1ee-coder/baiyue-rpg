@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("debug panel exposes compact exact controls, persists tuning, and exports a submission-ready JSON", async ({ page }) => {
-  await page.goto("./?shaderTime=10");
+  await page.goto("./world-debug.html?shaderTime=10");
   await expect(page.locator("html")).toHaveAttribute("data-render-mode", "enhanced", { timeout: 30_000 });
 
   await expect(page.locator("[data-lighting-parameter]")).toHaveCount(8);
