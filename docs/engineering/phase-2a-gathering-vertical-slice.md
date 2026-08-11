@@ -1,12 +1,12 @@
 # 阶段 2A：基础采集垂直切片
 
-- 状态：Ready for implementation
+- 状态：Implemented
 - 确认日期：2026-08-11
 - 决策者：项目负责人
 - 前置实现：[阶段 1 当前状态](../product/current-state.md)
 - Accepted 决策：[Decision-0004：阶段 2A 资源内容放置边界](../decisions/0004-gathering-content-placement.md)
 
-> 本文已封板为阶段 2A 实施基线。Ready for implementation 不表示代码已经实现；实现状态仍只由源码、测试和[当前状态](../product/current-state.md)证明。
+> 本文是阶段 2A 实施基线。当前实现范围和技术债以[当前状态](../product/current-state.md)及[阶段 2A 运行时契约](../specifications/phase-2a-runtime-contracts.md)为准。
 
 ## 目标
 

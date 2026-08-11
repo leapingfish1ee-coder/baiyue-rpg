@@ -2,9 +2,9 @@ import { CHUNK_COORDINATE_MAX, CHUNK_COORDINATE_MIN, WORLD_POINT_NAV_MAX, WORLD_
 
 export const GAMEPLAY_PROTOCOL_VERSION = 1 as const;
 export const DB_SCHEMA_VERSION = 1 as const;
-export const SAVE_SCHEMA_VERSION = 1 as const;
-export const GAME_RULES_VERSION = 1 as const;
-export const CONTENT_VERSION = 1 as const;
+export const SAVE_SCHEMA_VERSION = 2 as const;
+export const GAME_RULES_VERSION = 2 as const;
+export const CONTENT_VERSION = 2 as const;
 export const EXPORT_FORMAT_VERSION = 1 as const;
 export const SAVE_ID = "save:local" as const;
 
@@ -22,6 +22,8 @@ export type NavDecimal = SignedDecimal;
 export type RequestId = string;
 export type CommandId = string;
 export type TaskId = string;
+export type PlacementId = string;
+export type ActionId = string;
 export type TerrainRequestId = string;
 export type ClaimId = string;
 export type DiagnosticId = string;
@@ -36,6 +38,7 @@ export type ActivityReason =
   | Readonly<{ code: "storage_write_failed"; params: null; allowedActions: readonly ["open_system", "export", "reset", "retry"]; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "incompatible_save"; params: Readonly<{ expected: U32; actual: U32; version: "db" | "save" | "rules" | "content" | "generator" }>; allowedActions: readonly ["export", "reset"]; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "active_in_other_tab"; params: null; allowedActions: readonly ["retry"]; diagnosticId: null }>
+  | Readonly<{ code: "integrity/quantity_overflow"; params: null; allowedActions: readonly ["open_system", "export", "reset"]; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "undefined_failure"; params: null; allowedActions: readonly ["open_system", "export", "reset"]; diagnosticId: DiagnosticId }>;
 
 export type ProtocolError =
@@ -46,12 +49,14 @@ export type LifecycleError =
   | Readonly<{ code: "save/incompatible_version"; params: Readonly<{ expected: U32; actual: U32; version: "db" | "save" | "rules" | "content" | "generator" }>; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "storage/unavailable" | "storage/write_failed" | "storage/quota_exceeded" | "storage/integrity_failed"; params: null; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "platform/web_locks_unavailable" | "active_in_other_tab"; params: null; diagnosticId: DiagnosticId | null }>
+  | Readonly<{ code: "integrity/quantity_overflow"; params: null; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "undefined_failure"; params: null; diagnosticId: DiagnosticId }>;
 
 export type CommandError =
   | Readonly<{ code: "command/id_conflict"; params: Readonly<{ commandId: CommandId }>; diagnosticId: null }>
   | Readonly<{ code: "command/invalid_seed"; params: null; diagnosticId: null }>
   | Readonly<{ code: "command/invalid_destination"; params: Readonly<{ destination: WorldPoint }>; diagnosticId: null }>
+  | Readonly<{ code: "command/unknown_target_prototype" | "command/content_placement_failed"; params: null; diagnosticId: null }>
   | Readonly<{ code: "command/confirmation_required"; params: Readonly<{ command: "ImportSave" | "ResetSave" }>; diagnosticId: null }>
   | Readonly<{ code: "save/not_found"; params: null; diagnosticId: null }>
   | Readonly<{ code: "save/incompatible_version"; params: Readonly<{ expected: U32; actual: U32; version: "db" | "save" | "rules" | "content" | "generator" }>; diagnosticId: DiagnosticId }>
@@ -69,13 +74,47 @@ export type ExploreTask = Readonly<{
   createdWorldTimeMs: WorldTimeDecimal;
 }>;
 
+export type GatherTask = Readonly<{
+  taskId: TaskId;
+  kind: "Gather";
+  targetPrototypeId: "wild_fiber";
+  quantity: SafeUint | null;
+  completedQuantity: SafeUint;
+  createdWorldTimeMs: WorldTimeDecimal;
+}>;
+
+export type TaskIntent = ExploreTask | GatherTask;
+
+export type ResourceActionSummary = Readonly<{
+  actionId: ActionId;
+  placementId: PlacementId;
+  prototypeId: "wild_fiber";
+  durationMs: WorldTimeDecimal;
+  remainingMs: WorldTimeDecimal;
+  skillSpeedBps: SafeUint;
+}>;
+
 export type Activity = Readonly<{
-  state: "idle" | "planning" | "moving" | "waiting" | "paused";
+  state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
+  phase: "idle" | "exploring" | "acquiring_target" | "moving_to_target" | "gathering" | "auto_exploring" | "waiting" | "paused";
   route: readonly WorldPoint[];
+  routePurpose: "explore" | "task_target" | "auto_explore" | null;
   routeIndex: SafeUint;
   etaMs: EtaDecimal | null;
   progressPermille: number | null;
+  targetPlacementId: PlacementId | null;
+  action: ResourceActionSummary | null;
   reason: ActivityReason | null;
+}>;
+
+export type ResourcePlacementSummary = Readonly<{
+  placementId: PlacementId;
+  prototypeId: "wild_fiber";
+  displayName: "野生纤维";
+  point: WorldPoint;
+  state: "active" | "depleted" | "respawning";
+  respawnRemainingMs: WorldTimeDecimal | null;
+  reachable: "reachable" | "unreachable" | "unknown";
 }>;
 
 export type RevealedChunk = Readonly<{
@@ -93,11 +132,13 @@ export type OfflineReport = Readonly<{
   discardedDurationMs: UnsignedDecimal;
   fromWorldTimeMs: WorldTimeDecimal;
   toWorldTimeMs: WorldTimeDecimal;
-  taskBefore: ExploreTask | null;
-  taskAfter: ExploreTask | null;
+  taskBefore: TaskIntent | null;
+  taskAfter: TaskIntent | null;
   xpGained: SafeUint;
   levelsGained: SafeUint;
   revealedTiles: SafeUint;
+  fiberGained: SafeUint;
+  gatheringXpGained: SafeUint;
   stopReason: ActivityReason | null;
   committedRevision: SafeUint;
 }>;
@@ -108,11 +149,14 @@ export type GameplayReadModelV1 = Readonly<{
   gameplayEpoch: SafeUint;
   startup: "acquiring_lock" | "loading_save" | "new_world" | "processing_offline" | "ready" | "active_in_other_tab" | "incompatible_save" | "storage_blocked";
   generatorVersion: U32 | null;
-  player: Readonly<{ position: WorldPoint; hp: Readonly<{ current: 100; max: 100 }>; combatScope: "not_implemented_phase_1" }> | null;
-  task: ExploreTask | null;
+  player: Readonly<{ position: WorldPoint; hp: Readonly<{ current: 100; max: 100 }>; combatScope: "not_implemented_phase_2a" }> | null;
+  task: TaskIntent | null;
   activity: Activity;
   exploration: Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; observationRadiusTiles: SafeUint; revealedTileCount: SafeUint }> | null;
-  map: Readonly<{ revealedChunks: readonly RevealedChunk[]; selectedDestination: null }>;
+  skills: Readonly<{ gathering: Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; skillSpeedBps: SafeUint }> }> | null;
+  inventory: Readonly<{ items: readonly Readonly<{ itemId: "fiber"; displayName: "纤维"; quantity: SafeUint }>[] }> | null;
+  knownTargetPrototypeIds: readonly "wild_fiber"[];
+  map: Readonly<{ revealedChunks: readonly RevealedChunk[]; resourcePlacements: readonly ResourcePlacementSummary[]; selectedDestination: null }>;
   save: Readonly<{ state: "none" | "saving" | "saved" | "error" | "incompatible" | "active_in_other_tab"; revision: SafeUint; committedWallClockMs: SafeUint | null; localOnly: true; evictionWarning: boolean; lastError: ActivityReason | null }>;
   offlineReport: OfflineReport | null;
 }>;
@@ -121,6 +165,7 @@ export type GameplayCommand =
   | Readonly<{ type: "CreateWorld"; commandId: CommandId; seed: SeedDecimal; seedSource: "automatic" | "manual"; wallClockMs: SafeUint }>
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Explore"; mode: "continuous"; destination: null }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Explore"; mode: "destination"; destination: WorldPoint }>; wallClockMs: SafeUint }>
+  | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Gather"; targetPrototypeId: "wild_fiber"; quantity: SafeUint | null }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "CancelTask" | "ExportSave"; commandId: CommandId; wallClockMs: SafeUint }>
   | Readonly<{ type: "ImportSave"; commandId: CommandId; backupUtf8: ArrayBuffer; confirmed: true; wallClockMs: SafeUint }>
   | Readonly<{ type: "ResetSave"; commandId: CommandId; confirmed: true; wallClockMs: SafeUint }>;
@@ -149,6 +194,8 @@ const SIGNED_DECIMAL = /^(?:0|-?[1-9][0-9]*)$/;
 const REQUEST_ID = /^req:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
 const COMMAND_ID = /^cmd:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
 const TASK_ID = /^task:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
+const PLACEMENT_ID = /^place:wild-fiber:(?:ambient:(?:0|-?[1-9][0-9]*):(?:0|-?[1-9][0-9]*)|guarantee:(?:initial-observation|ring-a|ring-b))$/;
+const ACTION_ID = /^action:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const TERRAIN_REQUEST_ID = /^terrain:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const CLAIM_ID = /^claim:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const DIAGNOSTIC_ID = /^diag:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[a-z][a-z0-9]*(?:-[a-z0-9]+)*:[0-9a-f]{16}$/;
@@ -217,6 +264,14 @@ export function isTaskId(value: unknown): value is TaskId {
   return boundedSessionId(value, TASK_ID);
 }
 
+export function isPlacementId(value: unknown): value is PlacementId {
+  return typeof value === "string" && PLACEMENT_ID.test(value);
+}
+
+export function isActionId(value: unknown): value is ActionId {
+  return boundedPairId(value, ACTION_ID, 0n, MAX_EXACT, MAX_EXACT);
+}
+
 export function isTerrainRequestId(value: unknown): value is TerrainRequestId {
   return boundedPairId(value, TERRAIN_REQUEST_ID, 0n, BigInt(Number.MAX_SAFE_INTEGER), BigInt(Number.MAX_SAFE_INTEGER));
 }
@@ -258,6 +313,11 @@ export function isGameplayCommand(value: unknown): value is GameplayCommand {
     case "SetTask": {
       if (!hasExactKeys(command, ["type", "commandId", "task", "wallClockMs"]) || command.task === null || typeof command.task !== "object") return false;
       const task = command.task as Record<string, unknown>;
+      if (task.kind === "Gather") {
+        return hasExactKeys(task, ["kind", "targetPrototypeId", "quantity"])
+          && task.targetPrototypeId === "wild_fiber"
+          && (task.quantity === null || (isSafeUint(task.quantity) && task.quantity > 0));
+      }
       if (task.mode === "continuous") return hasExactKeys(task, ["kind", "mode", "destination"]) && task.kind === "Explore" && task.destination === null;
       return hasExactKeys(task, ["kind", "mode", "destination"]) && task.kind === "Explore" && task.mode === "destination" && isWorldPoint(task.destination);
     }
@@ -313,7 +373,7 @@ function isVersionParams(value: unknown): value is Readonly<{ expected: U32; act
 function isLifecycleError(value: unknown): value is LifecycleError {
   if (!hasExactKeys(value, ["code", "params", "diagnosticId"]) || typeof value.code !== "string") return false;
   if (value.code === "save/incompatible_version") return isVersionParams(value.params) && isDiagnosticId(value.diagnosticId);
-  if (["storage/unavailable", "storage/write_failed", "storage/quota_exceeded", "storage/integrity_failed", "undefined_failure"].includes(value.code)) {
+  if (["storage/unavailable", "storage/write_failed", "storage/quota_exceeded", "storage/integrity_failed", "integrity/quantity_overflow", "undefined_failure"].includes(value.code)) {
     return value.params === null && isDiagnosticId(value.diagnosticId);
   }
   if (value.code === "platform/web_locks_unavailable" || value.code === "active_in_other_tab") {
@@ -332,7 +392,7 @@ function isProtocolError(value: unknown): value is ProtocolError {
 function isCommandError(value: unknown): value is CommandError {
   if (!hasExactKeys(value, ["code", "params", "diagnosticId"]) || typeof value.code !== "string") return false;
   if (value.code === "command/id_conflict") return hasExactKeys(value.params, ["commandId"]) && isCommandId(value.params.commandId) && value.diagnosticId === null;
-  if (value.code === "command/invalid_seed" || value.code === "save/not_found") return value.params === null && value.diagnosticId === null;
+  if (["command/invalid_seed", "command/unknown_target_prototype", "command/content_placement_failed", "save/not_found"].includes(value.code)) return value.params === null && value.diagnosticId === null;
   if (value.code === "command/invalid_destination") return hasExactKeys(value.params, ["destination"]) && isWorldPoint(value.params.destination) && value.diagnosticId === null;
   if (value.code === "command/confirmation_required") return hasExactKeys(value.params, ["command"]) && (value.params.command === "ImportSave" || value.params.command === "ResetSave") && value.diagnosticId === null;
   if (value.code === "save/incompatible_version") return isVersionParams(value.params) && isDiagnosticId(value.diagnosticId);
@@ -362,6 +422,8 @@ export function isActivityReason(value: unknown): value is ActivityReason {
       return isVersionParams(value.params) && isDiagnosticId(value.diagnosticId) && JSON.stringify(value.allowedActions) === JSON.stringify(["export", "reset"]);
     case "active_in_other_tab":
       return value.params === null && value.diagnosticId === null && value.allowedActions.length === 1 && value.allowedActions[0] === "retry";
+    case "integrity/quantity_overflow":
+      return value.params === null && isDiagnosticId(value.diagnosticId) && JSON.stringify(value.allowedActions) === JSON.stringify(["open_system", "export", "reset"]);
     case "undefined_failure":
       return value.params === null && isDiagnosticId(value.diagnosticId) && JSON.stringify(value.allowedActions) === JSON.stringify(["open_system", "export", "reset"]);
     default:
@@ -376,13 +438,47 @@ export function isExploreTask(value: unknown): value is ExploreTask {
     && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
 }
 
+export function isGatherTask(value: unknown): value is GatherTask {
+  return hasExactKeys(value, ["taskId", "kind", "targetPrototypeId", "quantity", "completedQuantity", "createdWorldTimeMs"])
+    && isTaskId(value.taskId) && value.kind === "Gather" && value.targetPrototypeId === "wild_fiber"
+    && (value.quantity === null || (isSafeUint(value.quantity) && value.quantity > 0))
+    && isSafeUint(value.completedQuantity)
+    && (value.quantity === null || value.completedQuantity <= value.quantity)
+    && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
+}
+
+export function isTaskIntent(value: unknown): value is TaskIntent {
+  return isExploreTask(value) || isGatherTask(value);
+}
+
+function isResourceActionSummary(value: unknown): value is ResourceActionSummary {
+  return hasExactKeys(value, ["actionId", "placementId", "prototypeId", "durationMs", "remainingMs", "skillSpeedBps"])
+    && isActionId(value.actionId) && isPlacementId(value.placementId) && value.prototypeId === "wild_fiber"
+    && isCanonicalUnsignedDecimal(value.durationMs) && isCanonicalUnsignedDecimal(value.remainingMs)
+    && BigInt(value.remainingMs) <= BigInt(value.durationMs) && isSafeUint(value.skillSpeedBps) && value.skillSpeedBps <= 2_500;
+}
+
 function isActivity(value: unknown): value is Activity {
-  if (!hasExactKeys(value, ["state", "route", "routeIndex", "etaMs", "progressPermille", "reason"]) || !Array.isArray(value.route)) return false;
-  if (!["idle", "planning", "moving", "waiting", "paused"].includes(value.state as string) || value.route.length > 65_536 || !value.route.every(isWorldPoint)) return false;
+  if (!hasExactKeys(value, ["state", "phase", "route", "routePurpose", "routeIndex", "etaMs", "progressPermille", "targetPlacementId", "action", "reason"]) || !Array.isArray(value.route)) return false;
+  if (!["idle", "planning", "moving", "acting", "waiting", "paused"].includes(value.state as string)
+    || !["idle", "exploring", "acquiring_target", "moving_to_target", "gathering", "auto_exploring", "waiting", "paused"].includes(value.phase as string)
+    || value.route.length > 65_536 || !value.route.every(isWorldPoint)) return false;
+  if (!(value.routePurpose === null || ["explore", "task_target", "auto_explore"].includes(value.routePurpose as string))) return false;
   if (!isSafeUint(value.routeIndex) || (value.route.length === 0 ? value.routeIndex !== 0 : value.routeIndex >= value.route.length)) return false;
   if (!(value.etaMs === null || isCanonicalUnsignedDecimal(value.etaMs))) return false;
   if (!(value.progressPermille === null || (Number.isInteger(value.progressPermille) && (value.progressPermille as number) >= 0 && (value.progressPermille as number) <= 1000))) return false;
+  if (!(value.targetPlacementId === null || isPlacementId(value.targetPlacementId))) return false;
+  if (!(value.action === null || isResourceActionSummary(value.action))) return false;
+  if (value.state === "acting" && value.action === null) return false;
   return value.reason === null || isActivityReason(value.reason);
+}
+
+function isResourcePlacementSummary(value: unknown): value is ResourcePlacementSummary {
+  return hasExactKeys(value, ["placementId", "prototypeId", "displayName", "point", "state", "respawnRemainingMs", "reachable"])
+    && isPlacementId(value.placementId) && value.prototypeId === "wild_fiber" && value.displayName === "野生纤维"
+    && isWorldPoint(value.point) && ["active", "depleted", "respawning"].includes(value.state as string)
+    && (value.respawnRemainingMs === null || isCanonicalUnsignedDecimal(value.respawnRemainingMs))
+    && ["reachable", "unreachable", "unknown"].includes(value.reachable as string);
 }
 
 function isCanonicalFogBase64(value: unknown): value is string {
@@ -400,31 +496,42 @@ function isRevealedChunk(value: unknown): value is RevealedChunk {
 }
 
 export function isOfflineReport(value: unknown): value is OfflineReport {
-  return hasExactKeys(value, ["claimId", "rawElapsedMs", "clockSkew", "creditedDurationMs", "discardedDurationMs", "fromWorldTimeMs", "toWorldTimeMs", "taskBefore", "taskAfter", "xpGained", "levelsGained", "revealedTiles", "stopReason", "committedRevision"])
+  return hasExactKeys(value, ["claimId", "rawElapsedMs", "clockSkew", "creditedDurationMs", "discardedDurationMs", "fromWorldTimeMs", "toWorldTimeMs", "taskBefore", "taskAfter", "xpGained", "levelsGained", "revealedTiles", "fiberGained", "gatheringXpGained", "stopReason", "committedRevision"])
     && isClaimId(value.claimId) && typeof value.rawElapsedMs === "number" && Number.isSafeInteger(value.rawElapsedMs)
     && (value.clockSkew === "none" || value.clockSkew === "backward") && isCanonicalUnsignedDecimal(value.creditedDurationMs)
     && isCanonicalUnsignedDecimal(value.discardedDurationMs) && isCanonicalUnsignedDecimal(value.fromWorldTimeMs)
-    && isCanonicalUnsignedDecimal(value.toWorldTimeMs) && (value.taskBefore === null || isExploreTask(value.taskBefore))
-    && (value.taskAfter === null || isExploreTask(value.taskAfter)) && isSafeUint(value.xpGained) && isSafeUint(value.levelsGained)
-    && isSafeUint(value.revealedTiles) && (value.stopReason === null || isActivityReason(value.stopReason)) && isSafeUint(value.committedRevision)
+    && isCanonicalUnsignedDecimal(value.toWorldTimeMs) && (value.taskBefore === null || isTaskIntent(value.taskBefore))
+    && (value.taskAfter === null || isTaskIntent(value.taskAfter)) && isSafeUint(value.xpGained) && isSafeUint(value.levelsGained)
+    && isSafeUint(value.revealedTiles) && isSafeUint(value.fiberGained) && isSafeUint(value.gatheringXpGained)
+    && (value.stopReason === null || isActivityReason(value.stopReason)) && isSafeUint(value.committedRevision)
     && (value.clockSkew !== "backward" || (value.rawElapsedMs < 0 && value.creditedDurationMs === "0" && value.discardedDurationMs === "0" && value.toWorldTimeMs === value.fromWorldTimeMs));
 }
 
 export function isGameplayReadModel(value: unknown): value is GameplayReadModelV1 {
-  if (!hasExactKeys(value, ["protocolVersion", "readModelRevision", "gameplayEpoch", "startup", "generatorVersion", "player", "task", "activity", "exploration", "map", "save", "offlineReport"])) return false;
+  if (!hasExactKeys(value, ["protocolVersion", "readModelRevision", "gameplayEpoch", "startup", "generatorVersion", "player", "task", "activity", "exploration", "skills", "inventory", "knownTargetPrototypeIds", "map", "save", "offlineReport"])) return false;
   if (value.protocolVersion !== 1 || !isSafeUint(value.readModelRevision) || !isSafeUint(value.gameplayEpoch)
     || !["acquiring_lock", "loading_save", "new_world", "processing_offline", "ready", "active_in_other_tab", "incompatible_save", "storage_blocked"].includes(value.startup as string)
     || !(value.generatorVersion === null || isU32(value.generatorVersion))) return false;
   if (value.player !== null && !(hasExactKeys(value.player, ["position", "hp", "combatScope"]) && isWorldPoint(value.player.position)
     && hasExactKeys(value.player.hp, ["current", "max"]) && value.player.hp.current === 100 && value.player.hp.max === 100
-    && value.player.combatScope === "not_implemented_phase_1")) return false;
-  if (!(value.task === null || isExploreTask(value.task)) || !isActivity(value.activity)) return false;
+    && value.player.combatScope === "not_implemented_phase_2a")) return false;
+  if (!(value.task === null || isTaskIntent(value.task)) || !isActivity(value.activity)) return false;
   if (value.exploration !== null && !(hasExactKeys(value.exploration, ["level", "totalXp", "currentLevelXp", "nextLevelXp", "observationRadiusTiles", "revealedTileCount"])
     && isSafeUint(value.exploration.level) && isSafeUint(value.exploration.totalXp) && isSafeUint(value.exploration.currentLevelXp)
     && (value.exploration.nextLevelXp === null || isSafeUint(value.exploration.nextLevelXp)) && isSafeUint(value.exploration.observationRadiusTiles)
     && isSafeUint(value.exploration.revealedTileCount))) return false;
-  if (!(hasExactKeys(value.map, ["revealedChunks", "selectedDestination"]) && Array.isArray(value.map.revealedChunks)
-    && value.map.revealedChunks.every(isRevealedChunk) && value.map.selectedDestination === null)) return false;
+  if (value.skills !== null && !(hasExactKeys(value.skills, ["gathering"]) && hasExactKeys(value.skills.gathering, ["level", "totalXp", "currentLevelXp", "nextLevelXp", "skillSpeedBps"])
+    && isSafeUint(value.skills.gathering.level) && isSafeUint(value.skills.gathering.totalXp) && isSafeUint(value.skills.gathering.currentLevelXp)
+    && (value.skills.gathering.nextLevelXp === null || isSafeUint(value.skills.gathering.nextLevelXp))
+    && isSafeUint(value.skills.gathering.skillSpeedBps) && value.skills.gathering.skillSpeedBps <= 2_500)) return false;
+  if (value.inventory !== null && !(hasExactKeys(value.inventory, ["items"]) && Array.isArray(value.inventory.items)
+    && value.inventory.items.length <= 1 && value.inventory.items.every((item: unknown) => hasExactKeys(item, ["itemId", "displayName", "quantity"])
+      && item.itemId === "fiber" && item.displayName === "纤维" && isSafeUint(item.quantity) && item.quantity > 0))) return false;
+  if (!Array.isArray(value.knownTargetPrototypeIds) || value.knownTargetPrototypeIds.some((id: unknown) => id !== "wild_fiber")
+    || new Set(value.knownTargetPrototypeIds).size !== value.knownTargetPrototypeIds.length) return false;
+  if (!(hasExactKeys(value.map, ["revealedChunks", "resourcePlacements", "selectedDestination"]) && Array.isArray(value.map.revealedChunks)
+    && value.map.revealedChunks.every(isRevealedChunk) && Array.isArray(value.map.resourcePlacements)
+    && value.map.resourcePlacements.every(isResourcePlacementSummary) && value.map.selectedDestination === null)) return false;
   if (!(hasExactKeys(value.save, ["state", "revision", "committedWallClockMs", "localOnly", "evictionWarning", "lastError"])
     && ["none", "saving", "saved", "error", "incompatible", "active_in_other_tab"].includes(value.save.state as string)
     && isSafeUint(value.save.revision) && (value.save.committedWallClockMs === null || isSafeUint(value.save.committedWallClockMs))

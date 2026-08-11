@@ -17,8 +17,8 @@
 [hidden] { display: none !important; }
 html, body, #game-app { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 body { background: #07100e; }
-button, input { font: inherit; }
-button, input, a { -webkit-tap-highlight-color: transparent; }
+button, input, select { font: inherit; }
+button, input, select, a { -webkit-tap-highlight-color: transparent; }
 button, a { color: inherit; }
 
 #game-app { position: relative; isolation: isolate; }
@@ -67,7 +67,7 @@ button, a { color: inherit; }
 .header-status > span { max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--muted); }
 .header-status a { text-decoration: none; }
 
-button, .header-status a, input {
+button, .header-status a, input, select {
   min-height: 40px;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -76,12 +76,12 @@ button, .header-status a, input {
 }
 button, .header-status a { display: inline-flex; align-items: center; justify-content: center; padding: 0 14px; cursor: pointer; }
 button:hover, .header-status a:hover { border-color: rgba(239, 232, 210, .34); background: rgba(48, 72, 61, .96); }
-button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { cursor: wait; opacity: .5; }
 button.primary { border-color: rgba(223, 182, 106, .7); background: var(--accent); color: var(--accent-ink); font-weight: 750; }
 button.primary:hover { background: #edc67d; }
 button.danger { border-color: rgba(228, 154, 134, .35); color: #f5c1b2; }
-input { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-nums; }
+input, select { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-nums; }
 
 .onboarding {
   position: absolute;
@@ -98,7 +98,7 @@ input { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-nums; }
 .message { min-height: 1.4em; margin: 10px 0 0 !important; font-size: 12px; color: var(--muted); }
 .message[data-error="true"] { color: #f3ac98; }
 
-.journey-panel { position: absolute; top: 96px; left: 20px; width: min(310px, calc(100vw - 40px)); padding: 16px; }
+.journey-panel { position: absolute; top: 96px; left: 20px; width: min(330px, calc(100vw - 40px)); max-height: calc(100vh - 196px); padding: 16px; overflow: auto; }
 .player-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
 .player-mark { width: 34px; height: 34px; border: 2px solid #f1d69f; border-radius: 50% 50% 46% 54%; background: radial-gradient(circle at 42% 38%, #fff8d8 0 11%, #d99c4d 13% 45%, #68492e 47% 100%); box-shadow: 0 0 0 4px rgba(223, 182, 106, .12); }
 .player-row div { display: grid; gap: 2px; }
@@ -116,10 +116,35 @@ input { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-nums; }
 .journey-stats dt { font-size: 9px; color: var(--muted); }
 .journey-stats dd { margin: 3px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
 
-.task-bar { position: absolute; left: 50%; bottom: 22px; display: flex; gap: 8px; padding: 8px; transform: translateX(-50%); }
+.phase2-sections { display: grid; gap: 10px; margin-top: 14px; }
+.phase2-sections > section { padding-top: 11px; border-top: 1px solid var(--line); }
+.section-heading, .compact-stat { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.section-heading strong { font-size: 12px; }
+.section-heading span, .compact-stat { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+#gather-controls { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 9px; }
+#gather-controls label { font-size: 10px; color: var(--muted); }
+#gather-controls input, #gather-controls select { width: 100%; min-height: 34px; }
+.compact-actions { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.compact-actions button { min-height: 36px; padding-inline: 8px; font-size: 11px; }
+.empty-copy { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
+.compact-stat { margin-top: 8px; }
+.compact-stat strong { color: var(--ink); font-size: 14px; }
+.resource-list { display: grid; gap: 5px; max-height: 120px; margin: 8px 0 0; padding: 0; overflow: auto; list-style: none; }
+.resource-list li { display: grid; grid-template-columns: 8px 1fr; align-items: center; gap: 8px; min-height: 30px; }
+.resource-list li > span { width: 8px; height: 8px; border-radius: 50%; background: #85d59a; }
+.resource-list li[data-state="depleted"] > span { background: #65736d; }
+.resource-list li[data-state="respawning"] > span { background: #d3a85e; }
+.resource-list li div { display: flex; justify-content: space-between; gap: 8px; }
+.resource-list strong { font-size: 10px; }
+.resource-list small { color: var(--muted); font-size: 9px; }
+
+.task-bar { position: absolute; left: 50%; bottom: 22px; display: flex; align-items: stretch; gap: 8px; padding: 8px; transform: translateX(-50%); }
 .task-bar button { min-width: 165px; height: 56px; display: grid; align-content: center; gap: 2px; text-align: left; }
 .task-bar button span { font-size: 13px; font-weight: 700; }
 .task-bar button small { font-size: 9px; font-weight: 400; color: currentColor; opacity: .7; }
+.bottom-activity { min-width: 210px; display: grid; align-content: center; gap: 2px; padding: 0 12px; border-right: 1px solid var(--line); }
+.bottom-activity span, .bottom-activity small { max-width: 230px; overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.bottom-activity strong { font-size: 13px; color: #efd092; }
 
 .destination-card { position: absolute; left: 50%; bottom: 96px; min-width: 260px; padding: 14px; transform: translateX(-50%); text-align: center; }
 .destination-card strong { display: block; margin: 4px 0 12px; font-family: Georgia, serif; font-size: 20px; }
@@ -150,6 +175,9 @@ input { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-nums; }
   .journey-panel { top: 76px; left: 12px; width: calc(100vw - 24px); }
   .journey-stats { grid-template-columns: repeat(4, 1fr); }
   .task-bar { bottom: 10px; width: calc(100vw - 20px); }
+  .bottom-activity { min-width: 128px; padding-inline: 8px; }
+  .bottom-activity span { display: none; }
+  .bottom-activity small { max-width: 128px; }
   .task-bar button { min-width: 0; flex: 1; padding: 0 10px; }
   .task-bar button small { display: none; }
   .destination-card { bottom: 80px; }

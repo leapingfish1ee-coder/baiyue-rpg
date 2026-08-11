@@ -589,6 +589,8 @@ async function probeGameplayInitialization(): Promise<{ status: string | null; c
     await session.ready();
     session.send({ type: "initialize", protocolVersion: 1, requestId: requestId(0), generatorVersion: 3, wallClockMs: 2_000 });
     const result = await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(0));
+    session.send({ type: "shutdown", protocolVersion: 1, requestId: requestId(1) });
+    await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(1));
     return {
       status: result.message.type === "request-result" ? result.message.status : null,
       code: result.message.type === "request-result" ? result.message.error?.code ?? null : null,
@@ -762,7 +764,7 @@ async function runPersistenceTamperMatrix(): Promise<unknown> {
     execution.route = [records.core!.position];
     records.meta!.core_checksum_sha256 = await sha256Hex(records.core);
   });
-  await run("version", (records) => { records.meta!.content_version = 2; });
+  await run("version", (records) => { records.meta!.content_version = 1; });
   await run("extraIndex", () => {}, "extra-index");
   await run("autoIncrement", () => {}, "auto-increment");
   await run("higherDbVersion", () => {}, "exact", 2);

@@ -53,6 +53,34 @@
           <div><dt>观察半径</dt><dd id="radius-label">4 格</dd></div>
           <div><dt>预计抵达</dt><dd id="eta-label">—</dd></div>
         </dl>
+        <div class="phase2-sections">
+          <section aria-labelledby="task-heading">
+            <div class="section-heading"><strong id="task-heading">任务</strong><span id="gather-progress">未设置</span></div>
+            <div id="gather-controls" hidden>
+              <label for="gather-target">目标</label>
+              <select id="gather-target"><option value="wild_fiber">野生纤维</option></select>
+              <label for="gather-quantity">数量</label>
+              <input id="gather-quantity" inputmode="numeric" value="10" />
+              <div class="compact-actions">
+                <button id="gather-finite" class="primary" type="button">采集 ×10</button>
+                <button id="gather-continuous" type="button">持续采集</button>
+              </div>
+            </div>
+            <p id="gather-unknown" class="empty-copy">尚未发现可采集资源。</p>
+          </section>
+          <section aria-labelledby="skills-heading">
+            <div class="section-heading"><strong id="skills-heading">技能</strong><span id="gathering-speed">0 bps</span></div>
+            <div class="compact-stat"><span id="gathering-level">采集 Lv.1</span><span id="gathering-xp">0 / 100 XP</span></div>
+          </section>
+          <section aria-labelledby="inventory-heading">
+            <div class="section-heading"><strong id="inventory-heading">库存</strong><span>无容量限制</span></div>
+            <div class="compact-stat"><span>纤维</span><strong id="fiber-quantity">0</strong></div>
+          </section>
+          <section aria-labelledby="resources-heading">
+            <div class="section-heading"><strong id="resources-heading">已知资源</strong><span id="resource-count">0</span></div>
+            <ul id="resource-list" class="resource-list"></ul>
+          </section>
+        </div>
       </aside>
 
       <section id="destination-card" class="surface destination-card" hidden aria-live="polite">
@@ -69,6 +97,11 @@
       </section>
 
       <nav id="task-bar" class="surface task-bar" hidden aria-label="探索操作">
+        <div class="bottom-activity" aria-live="polite">
+          <span id="bottom-intent">无任务</span>
+          <strong id="bottom-phase">空闲</strong>
+          <small id="bottom-remaining">—</small>
+        </div>
         <button id="explore-continuous" class="primary" type="button">
           <span>持续探索</span><small>寻找最近的未知边界</small>
         </button>

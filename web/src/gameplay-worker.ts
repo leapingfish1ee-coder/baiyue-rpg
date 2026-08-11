@@ -17,7 +17,8 @@ import {
   type MainToGameplayWorker,
   type OfflineReport,
 } from "./gameplay/contracts.ts";
-import { GameplayEngine, InvalidWorldSeedError, type EngineTerrainEffect } from "./gameplay/engine.ts";
+import { GameplayEngine, InvalidWorldSeedError, QuantityOverflowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
+import { ContentPlacementError } from "./gameplay/content.ts";
 import { floorDiv, levelFromTotalXp, tileCoordinate } from "./gameplay/math.ts";
 import { RUNTIME_CHUNK_SIZE } from "./world-contract.ts";
 import {
@@ -197,6 +198,9 @@ function activityReasonForFatal(error: FatalError): ActivityReason {
     return { code: "incompatible_save", params: error.params, allowedActions: ["export", "reset"], diagnosticId: error.diagnosticId };
   }
   if (error.code === "active_in_other_tab") return { code: "active_in_other_tab", params: null, allowedActions: ["retry"], diagnosticId: null };
+  if (error.code === "integrity/quantity_overflow") {
+    return { code: error.code, params: null, allowedActions: ["open_system", "export", "reset"], diagnosticId: error.diagnosticId };
+  }
   return { code: "undefined_failure", params: null, allowedActions: ["open_system", "export", "reset"], diagnosticId: error.diagnosticId ?? diagnosticId("worker", "fatal") };
 }
 
@@ -249,13 +253,13 @@ async function driveEngineWork(publishReadModels = true): Promise<void> {
 }
 
 function startBackgroundWork(): void {
-  if (fatal || engine === null || workPromise !== null || engine.snapshot().activityState !== "planning") return;
+  if (fatal || engine === null || workPromise !== null || !engine.hasPendingWork) return;
   workPromise = driveEngineWork()
     .catch(() => fatalPause("terrain", "work-failed"))
     .finally(() => {
       workPromise = null;
       emitReadModel(true);
-      if (!fatal && engine?.snapshot().activityState === "planning") startBackgroundWork();
+      if (!fatal && engine?.hasPendingWork) startBackgroundWork();
     });
 }
 
@@ -282,7 +286,7 @@ async function commitDirty(wallClockMs: number): Promise<void> {
   const revision = committedSnapshot.meta.current_revision + 1;
   const core = coreFromEngine(revision, committedSnapshot.core.command_receipts);
   const persisted = engine.persistedState();
-  const operation = () => storage!.commit(core, persisted.revealedChunks, wallClockMs);
+  const operation = () => storage!.commit(core, persisted.worldChunks, wallClockMs);
   failedCommitRetry = operation;
   const next = await operation();
   failedCommitRetry = null;
@@ -299,6 +303,11 @@ async function commitDirty(wallClockMs: number): Promise<void> {
 
 async function processOnlineTick(): Promise<void> {
   advanceOnlineClock();
+  if (engine?.needsImmediateCommit && committedSnapshot !== null) {
+    saveState = { ...saveState, state: "saving" };
+    await commitDirty(Math.floor(Date.now()));
+    engine.acknowledgeImmediateCommit();
+  }
   const due = dirtySincePerformanceMs !== null && performance.now() - dirtySincePerformanceMs >= 5_000;
   if (due && committedSnapshot !== null) await commitDirty(Math.floor(Date.now()));
   emitReadModel();
@@ -312,6 +321,12 @@ function startOnlineTimer(): void {
     if (tickQueued || fatal) return;
     tickQueued = true;
     inboxTail = inboxTail.then(processOnlineTick).catch((error: unknown) => {
+      if (error instanceof QuantityOverflowError) {
+        fatalPause("engine", "quantity-overflow", {
+          code: "integrity/quantity_overflow", params: null, diagnosticId: diagnosticId("engine", "quantity-overflow"),
+        });
+        return;
+      }
       const persistence = error instanceof PersistenceError ? persistenceLifecycleError(error) : undefined;
       fatalPause("storage", "autosave-failed", persistence);
     }).finally(() => { tickQueued = false; });
@@ -357,24 +372,35 @@ function coreFromEngine(
 ): CoreRecord {
   if (engine === null) throw new Error("gameplay engine is unavailable");
   const state = engine.persistedState();
-  const task = state.task === null ? null : {
+  const task = state.task === null ? null : state.task.kind === "Gather" ? {
+    task_id: state.task.taskId,
+    kind: state.task.kind,
+    target_prototype_id: state.task.targetPrototypeId,
+    quantity: state.task.quantity,
+    completed_quantity: state.task.completedQuantity,
+    created_world_time_ms: state.task.createdWorldTimeMs,
+  } as const : {
     task_id: state.task.taskId,
     kind: state.task.kind,
     mode: state.task.mode,
     destination: state.task.destination,
     created_world_time_ms: state.task.createdWorldTimeMs,
-  };
+  } as const;
   return {
     save_id: "save:local",
     revision,
     seed: state.seed,
     world_time_ms: state.worldTimeMs,
     position: state.position,
+    camp_anchor: state.campAnchor,
     hp: { current: 100, max: 100 },
     exploration: { level: levelFromTotalXp(state.totalXp), total_xp: state.totalXp },
+    skills: { gathering: { level: levelFromTotalXp(state.gatheringXp), total_xp: state.gatheringXp } },
+    inventory: { fiber: state.fiber },
     task,
     execution: {
       state: state.execution.state,
+      route_purpose: state.execution.routePurpose,
       route: state.execution.route,
       route_index: state.execution.routeIndex,
       motion: state.execution.motion === null ? null : {
@@ -386,10 +412,19 @@ function coreFromEngine(
         total_weighted_cost: state.execution.motion.totalWeightedCost,
         path_index: state.execution.motion.pathIndex,
       },
+      target_placement_id: state.execution.targetPlacementId,
+      action: state.execution.action === null ? null : {
+        action_id: state.execution.action.actionId,
+        placement_id: state.execution.action.placementId,
+        start_world_time_ms: state.execution.action.startWorldTimeMs,
+        end_world_time_ms: state.execution.action.endWorldTimeMs,
+        duration_ms: state.execution.action.durationMs,
+        skill_speed_bps: state.execution.action.skillSpeedBps,
+      },
       waiting_reason: state.execution.waitingReason,
     },
     command_receipts: [...receipts].sort((left, right) => left.command_id < right.command_id ? -1 : left.command_id > right.command_id ? 1 : 0),
-    next_event_ordinal: "0",
+    next_event_ordinal: state.nextEventOrdinal,
     last_offline_report: offlineReport,
   };
 }
@@ -402,8 +437,18 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
     seed: core.seed,
     worldTimeMs: core.world_time_ms,
     position: core.position,
+    campAnchor: core.camp_anchor,
     totalXp: core.exploration.total_xp,
-    task: core.task === null ? null : {
+    gatheringXp: core.skills.gathering.total_xp,
+    fiber: core.inventory.fiber,
+    task: core.task === null ? null : core.task.kind === "Gather" ? {
+      taskId: core.task.task_id,
+      kind: core.task.kind,
+      targetPrototypeId: core.task.target_prototype_id,
+      quantity: core.task.quantity,
+      completedQuantity: core.task.completed_quantity,
+      createdWorldTimeMs: core.task.created_world_time_ms,
+    } : {
       taskId: core.task.task_id,
       kind: core.task.kind,
       mode: core.task.mode,
@@ -411,8 +456,23 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
       createdWorldTimeMs: core.task.created_world_time_ms,
     },
     executionState: core.execution.state,
+    routePurpose: core.execution.route_purpose,
+    targetPlacementId: core.execution.target_placement_id,
+    action: core.execution.action === null ? null : {
+      actionId: core.execution.action.action_id,
+      placementId: core.execution.action.placement_id,
+      startWorldTimeMs: core.execution.action.start_world_time_ms,
+      endWorldTimeMs: core.execution.action.end_world_time_ms,
+      durationMs: core.execution.action.duration_ms,
+      skillSpeedBps: core.execution.action.skill_speed_bps,
+    },
     waitingReason: core.execution.waiting_reason,
-    revealedChunks: snapshot.chunks.map((chunk) => ({ chunkKey: chunk.chunk_key, revealedBase64: btoa(String.fromCharCode(...chunk.revealed_bits)) })),
+    worldChunks: snapshot.chunks.map((chunk) => ({
+      chunkKey: chunk.chunk_key,
+      revealedBase64: btoa(String.fromCharCode(...chunk.revealed_bits)),
+      knownPlacements: chunk.known_placements,
+    })),
+    nextEventOrdinal: core.next_event_ordinal,
   });
   activateTerrainEpoch(engine.epoch);
   commandRecords.clear();
@@ -473,8 +533,12 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
   const levelBefore = levelFromTotalXp(before.totalXp);
   const taskBefore = taskClone(before.task);
   const credited = BigInt(claim.credited_duration_ms);
-  let remaining = credited;
-  let processed = 0n;
+  const alreadyProcessed = before.worldTimeMs - BigInt(claim.base_world_time_ms);
+  if (alreadyProcessed < 0n || alreadyProcessed > credited) {
+    throw new PersistenceError("storage/integrity_failed", "offline claim progress is outside the credited duration");
+  }
+  let remaining = credited - alreadyProcessed;
+  let processed = alreadyProcessed;
   let maxSliceMs = 0;
   startupOverride = "processing_offline";
   engine.touchReadModel();
@@ -488,12 +552,27 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
     const advanced = worldAfter - worldBefore;
     processed += advanced;
     remaining = unconsumed;
+    if (advanced > 0n) markDirty();
     const sliceDuration = performance.now() - sliceStart;
     if (sliceDuration > maxSliceMs) maxSliceMs = sliceDuration;
     post({
       type: "offline-progress", protocolVersion: 1, claimId: claim.claim_id,
       processedDurationMs: processed.toString(), creditedDurationMs: claim.credited_duration_ms, sliceMaxMs: maxSliceMs,
     });
+    if (engine.needsImmediateCommit) {
+      if (committedSnapshot === null) throw new PersistenceError("storage/unavailable", "offline settlement requires a committed save");
+      const revision = committedSnapshot.meta.current_revision + 1;
+      const generation = dirtyGeneration;
+      const core = coreFromEngine(revision, committedSnapshot.core.command_receipts);
+      committedSnapshot = await storage.commit(
+        core,
+        engine.persistedState().worldChunks,
+        committedSnapshot.meta.committed_wall_clock_ms,
+      );
+      committedDirtyGeneration = generation;
+      if (dirtyGeneration === generation) dirtySincePerformanceMs = null;
+      engine.acknowledgeImmediateCommit();
+    }
     if (advanced === 0n && engine.snapshot().activityState !== "planning") {
       throw new PersistenceError("storage/integrity_failed", "offline engine made no progress outside planning");
     }
@@ -501,7 +580,7 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
   }
   await driveEngineWork(false);
   const after = engine.snapshot();
-  const nextRevision = base.meta.current_revision + 1;
+  const nextRevision = committedSnapshot.meta.current_revision + 1;
   const rawElapsed = claim.target_wall_clock_ms - claim.from_wall_clock_ms;
   const report: OfflineReport = {
     claimId: claim.claim_id,
@@ -516,12 +595,14 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
     xpGained: after.totalXp - before.totalXp,
     levelsGained: levelFromTotalXp(after.totalXp) - levelBefore,
     revealedTiles: after.revealedTileCount - before.revealedTileCount,
+    fiberGained: after.fiber - before.fiber,
+    gatheringXpGained: after.gatheringXp - before.gatheringXp,
     stopReason: engine.toReadModel().activity.reason,
     committedRevision: nextRevision,
   };
   const core = coreFromEngine(nextRevision, base.core.command_receipts, report);
   const generation = dirtyGeneration;
-  const next = await storage.commit(core, engine.persistedState().revealedChunks, claim.target_wall_clock_ms, true);
+  const next = await storage.commit(core, engine.persistedState().worldChunks, claim.target_wall_clock_ms, true);
   committedSnapshot = next;
   committedDirtyGeneration = generation;
   dirtySincePerformanceMs = dirtyGeneration === generation ? null : performance.now();
@@ -560,6 +641,8 @@ async function processOfflineAtInitialization(currentWallClockMs: number): Promi
         xpGained: 0,
         levelsGained: 0,
         revealedTiles: 0,
+        fiberGained: 0,
+        gatheringXpGained: 0,
         stopReason: null,
         committedRevision: base.meta.current_revision,
       };
@@ -693,8 +776,8 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
           reason_code: null,
         };
         const core = coreFromEngine(1, [receipt]);
-        const revealedChunks = engine.persistedState().revealedChunks;
-        committedSnapshot = await persistentMutation(command, () => storage!.create(core, revealedChunks, command.wallClockMs));
+        const worldChunks = engine.persistedState().worldChunks;
+        committedSnapshot = await persistentMutation(command, () => storage!.create(core, worldChunks, command.wallClockMs));
         dirtyGeneration += 1;
         committedDirtyGeneration = dirtyGeneration;
         dirtySincePerformanceMs = null;
@@ -718,8 +801,8 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
           };
           const generation = dirtyGeneration;
           const core = coreFromEngine(revision, [...committedSnapshot.core.command_receipts, receipt]);
-          const revealedChunks = engine.persistedState().revealedChunks;
-          committedSnapshot = await persistentMutation(command, () => storage!.commit(core, revealedChunks, command.wallClockMs));
+          const worldChunks = engine.persistedState().worldChunks;
+          committedSnapshot = await persistentMutation(command, () => storage!.commit(core, worldChunks, command.wallClockMs));
           committedDirtyGeneration = generation;
           if (dirtyGeneration === generation) dirtySincePerformanceMs = null;
           saveState = { state: "saved", revision, committedWallClockMs: command.wallClockMs, localOnly: true, evictionWarning: false, lastError: null };
@@ -743,8 +826,8 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
           };
           const generation = dirtyGeneration;
           const core = coreFromEngine(revision, [...committedSnapshot.core.command_receipts, receipt]);
-          const revealedChunks = engine.persistedState().revealedChunks;
-          committedSnapshot = await persistentMutation(command, () => storage!.commit(core, revealedChunks, command.wallClockMs));
+          const worldChunks = engine.persistedState().worldChunks;
+          committedSnapshot = await persistentMutation(command, () => storage!.commit(core, worldChunks, command.wallClockMs));
           committedDirtyGeneration = generation;
           if (dirtyGeneration === generation) dirtySincePerformanceMs = null;
           saveState = { state: "saved", revision, committedWallClockMs: command.wallClockMs, localOnly: true, evictionWarning: false, lastError: null };
@@ -786,6 +869,13 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
     return { commandId: command.commandId, status: "accepted", readModelRevision: currentRevision(), saveRevision: currentSaveRevision(), error: null };
   } catch (error: unknown) {
     if (error instanceof InvalidWorldSeedError) return rejection(command.commandId, { code: "command/invalid_seed", params: null, diagnosticId: null });
+    if (error instanceof UnknownTargetPrototypeError) return rejection(command.commandId, { code: "command/unknown_target_prototype", params: null, diagnosticId: null });
+    if (error instanceof ContentPlacementError) return rejection(command.commandId, { code: "command/content_placement_failed", params: null, diagnosticId: null });
+    if (error instanceof QuantityOverflowError) {
+      const id = diagnosticId("engine", "quantity-overflow");
+      fatalPause("engine", "quantity-overflow", { code: "integrity/quantity_overflow", params: null, diagnosticId: id });
+      return rejection(command.commandId, { code: "integrity/quantity_overflow", params: null, diagnosticId: id });
+    }
     if (error instanceof BackupError) return rejection(command.commandId, backupCommandError(error));
     if (error instanceof PersistenceError) {
       const fatalError = persistenceLifecycleError(error);
@@ -979,6 +1069,7 @@ async function processInboxMessage(input: MainToGameplayWorker): Promise<void> {
         }
         advanceOnlineClock();
         if (committedSnapshot !== null) await commitDirty(input.wallClockMs);
+        if (engine?.needsImmediateCommit) engine.acknowledgeImmediateCommit();
         emitReadModel(true);
         post({ type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "flush", status: "accepted",
           readModelRevision: currentRevision(), saveRevision: currentSaveRevision(), error: null });

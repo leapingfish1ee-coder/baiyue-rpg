@@ -53,7 +53,7 @@ test("atomic new world commit creates the exact schema and restores persisted re
     restoredPosition: { x: "512", y: "512" },
     replayStatus: "accepted",
     replaySaveRevision: 1,
-    replayTerrainRequests: 1,
+    replayTerrainRequests: 3,
     conflictCode: "command/id_conflict",
   });
 });

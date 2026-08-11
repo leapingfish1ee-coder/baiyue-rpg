@@ -9,12 +9,14 @@ import {
   SAVE_ID,
   SAVE_SCHEMA_VERSION,
   isActivityReason,
+  isActionId,
   isCanonicalUnsignedDecimal,
   isCanonicalSignedDecimal,
   isChunkIdentity,
   isCommandId,
   isDiagnosticId,
   isOfflineReport,
+  isPlacementId,
   isSafeUint,
   isSeedDecimal,
   isTaskId,
@@ -27,7 +29,8 @@ import {
   type WorldPoint,
 } from "./contracts.ts";
 import { base64ToFogBits, fogBitsToBase64, FOG_BYTES_PER_CHUNK } from "./fog.ts";
-import { levelFromTotalXp } from "./math.ts";
+import { floorDiv, levelFromTotalXp } from "./math.ts";
+import type { KnownResourcePlacement } from "./engine.ts";
 
 export const GAMEPLAY_DATABASE_NAME = "baiyue-rpg-gameplay";
 export const GAMEPLAY_LOCK_NAME = "baiyue-rpg:active-save";
@@ -42,13 +45,9 @@ export type CommandReceiptRecord = Readonly<{
   reason_code: null;
 }>;
 
-export type PersistedTask = Readonly<{
-  task_id: string;
-  kind: "Explore";
-  mode: "continuous" | "destination";
-  destination: WorldPoint | null;
-  created_world_time_ms: string;
-}>;
+export type PersistedTask =
+  | Readonly<{ task_id: string; kind: "Explore"; mode: "continuous" | "destination"; destination: WorldPoint | null; created_world_time_ms: string }>
+  | Readonly<{ task_id: string; kind: "Gather"; target_prototype_id: "wild_fiber"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>;
 
 export type PersistedMotionLeg = Readonly<{
   start: WorldPoint;
@@ -61,10 +60,20 @@ export type PersistedMotionLeg = Readonly<{
 }>;
 
 export type PersistedExecution = Readonly<{
-  state: "idle" | "planning" | "moving" | "waiting" | "paused";
+  state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
+  route_purpose: "explore" | "task_target" | "auto_explore" | null;
   route: readonly WorldPoint[];
   route_index: number;
   motion: PersistedMotionLeg | null;
+  target_placement_id: string | null;
+  action: Readonly<{
+    action_id: string;
+    placement_id: string;
+    start_world_time_ms: string;
+    end_world_time_ms: string;
+    duration_ms: string;
+    skill_speed_bps: number;
+  }> | null;
   waiting_reason: ActivityReason | null;
 }>;
 
@@ -75,9 +84,9 @@ export type MetaRecord = Readonly<{
   committed_wall_clock_ms: number;
   committed_world_time_ms: string;
   db_schema_version: 1;
-  save_schema_version: 1;
-  game_rules_version: 1;
-  content_version: 1;
+  save_schema_version: 2;
+  game_rules_version: 2;
+  content_version: 2;
   generator_version: number;
   integrity_algorithm: typeof INTEGRITY_ALGORITHM;
   core_checksum_sha256: string;
@@ -90,8 +99,11 @@ export type CoreRecord = Readonly<{
   seed: SeedDecimal;
   world_time_ms: string;
   position: WorldPoint;
+  camp_anchor: WorldPoint;
   hp: Readonly<{ current: 100; max: 100 }>;
   exploration: Readonly<{ level: number; total_xp: number }>;
+  skills: Readonly<{ gathering: Readonly<{ level: number; total_xp: number }> }>;
+  inventory: Readonly<{ fiber: number }>;
   task: PersistedTask | null;
   execution: PersistedExecution;
   command_receipts: readonly CommandReceiptRecord[];
@@ -104,6 +116,7 @@ export type WorldChunkRecord = Readonly<{
   chunk_x: string;
   chunk_y: string;
   revealed_bits: Uint8Array;
+  known_placements: readonly KnownResourcePlacement[];
   revision: number;
   record_checksum_sha256: string;
 }>;
@@ -139,6 +152,7 @@ export type BackupChunkV1 = Readonly<{
   chunkX: string;
   chunkY: string;
   revealedBase64: string;
+  knownPlacements: readonly KnownResourcePlacement[];
   revision: number;
 }>;
 
@@ -217,9 +231,16 @@ function isHexChecksum(value: unknown): value is string {
 }
 
 function isPersistedTask(value: unknown): value is PersistedTask {
-  if (!exactObject(value, ["task_id", "kind", "mode", "destination", "created_world_time_ms"])) return false;
-  if (!isTaskId(value.task_id) || value.kind !== "Explore" || !isCanonicalUnsignedDecimal(value.created_world_time_ms)) return false;
-  return value.mode === "continuous" ? value.destination === null : value.mode === "destination" && isWorldPoint(value.destination);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const task = value as Record<string, unknown>;
+  if (!isTaskId(task.task_id) || !isCanonicalUnsignedDecimal(task.created_world_time_ms)) return false;
+  if (task.kind === "Gather") {
+    return exactObject(task, ["task_id", "kind", "target_prototype_id", "quantity", "completed_quantity", "created_world_time_ms"])
+      && task.target_prototype_id === "wild_fiber" && (task.quantity === null || (isSafeUint(task.quantity) && task.quantity > 0))
+      && isSafeUint(task.completed_quantity) && (task.quantity === null || task.completed_quantity <= task.quantity);
+  }
+  if (!exactObject(task, ["task_id", "kind", "mode", "destination", "created_world_time_ms"]) || task.kind !== "Explore") return false;
+  return task.mode === "continuous" ? task.destination === null : task.mode === "destination" && isWorldPoint(task.destination);
 }
 
 function isMotion(value: unknown): value is PersistedMotionLeg {
@@ -232,12 +253,21 @@ function isMotion(value: unknown): value is PersistedMotionLeg {
 }
 
 function isExecution(value: unknown): value is PersistedExecution {
-  if (!exactObject(value, ["state", "route", "route_index", "motion", "waiting_reason"]) || !Array.isArray(value.route)) return false;
-  if (!["idle", "planning", "moving", "waiting", "paused"].includes(value.state as string)
+  if (!exactObject(value, ["state", "route_purpose", "route", "route_index", "motion", "target_placement_id", "action", "waiting_reason"]) || !Array.isArray(value.route)) return false;
+  if (!["idle", "planning", "moving", "acting", "waiting", "paused"].includes(value.state as string)
     || value.route.length > 65_536 || !value.route.every(isWorldPoint) || !isSafeUint(value.route_index)) return false;
+  if (!(value.route_purpose === null || ["explore", "task_target", "auto_explore"].includes(value.route_purpose as string))) return false;
   if (value.route.length === 0 ? value.route_index !== 0 : value.route_index >= value.route.length) return false;
   if (!(value.motion === null || isMotion(value.motion)) || !(value.waiting_reason === null || isActivityReason(value.waiting_reason))) return false;
+  if (!(value.target_placement_id === null || isPlacementId(value.target_placement_id))) return false;
+  if (!(value.action === null || (exactObject(value.action, ["action_id", "placement_id", "start_world_time_ms", "end_world_time_ms", "duration_ms", "skill_speed_bps"])
+    && isActionId(value.action.action_id) && isPlacementId(value.action.placement_id)
+    && isCanonicalUnsignedDecimal(value.action.start_world_time_ms) && isCanonicalUnsignedDecimal(value.action.end_world_time_ms)
+    && isCanonicalUnsignedDecimal(value.action.duration_ms) && BigInt(value.action.end_world_time_ms) > BigInt(value.action.start_world_time_ms)
+    && BigInt(value.action.end_world_time_ms) - BigInt(value.action.start_world_time_ms) === BigInt(value.action.duration_ms)
+    && isSafeUint(value.action.skill_speed_bps) && value.action.skill_speed_bps <= 2_500))) return false;
   if (value.state === "moving" && value.motion === null) return false;
+  if (value.state === "acting" && value.action === null) return false;
   return value.state === "waiting" || value.state === "paused" ? value.waiting_reason !== null : value.waiting_reason === null;
 }
 
@@ -249,12 +279,16 @@ function isReceipt(value: unknown): value is CommandReceiptRecord {
 }
 
 export function isCoreRecord(value: unknown): value is CoreRecord {
-  if (!exactObject(value, ["save_id", "revision", "seed", "world_time_ms", "position", "hp", "exploration", "task", "execution", "command_receipts", "next_event_ordinal", "last_offline_report"])) return false;
+  if (!exactObject(value, ["save_id", "revision", "seed", "world_time_ms", "position", "camp_anchor", "hp", "exploration", "skills", "inventory", "task", "execution", "command_receipts", "next_event_ordinal", "last_offline_report"])) return false;
   if (value.save_id !== SAVE_ID || !isSafeUint(value.revision) || value.revision < 1 || !isSeedDecimal(value.seed)
-    || !isCanonicalUnsignedDecimal(value.world_time_ms) || !isWorldPoint(value.position)) return false;
+    || !isCanonicalUnsignedDecimal(value.world_time_ms) || !isWorldPoint(value.position) || !isWorldPoint(value.camp_anchor)) return false;
   if (!exactObject(value.hp, ["current", "max"]) || value.hp.current !== 100 || value.hp.max !== 100) return false;
   if (!exactObject(value.exploration, ["level", "total_xp"]) || !isSafeUint(value.exploration.level)
     || value.exploration.level < 1 || value.exploration.level > 100 || !isSafeUint(value.exploration.total_xp)) return false;
+  if (!exactObject(value.skills, ["gathering"]) || !exactObject(value.skills.gathering, ["level", "total_xp"])
+    || !isSafeUint(value.skills.gathering.level) || value.skills.gathering.level < 1 || value.skills.gathering.level > 100
+    || !isSafeUint(value.skills.gathering.total_xp) || value.skills.gathering.level !== levelFromTotalXp(value.skills.gathering.total_xp)) return false;
+  if (!exactObject(value.inventory, ["fiber"]) || !isSafeUint(value.inventory.fiber)) return false;
   if (!(value.task === null || isPersistedTask(value.task)) || !isExecution(value.execution)
     || !Array.isArray(value.command_receipts) || !value.command_receipts.every(isReceipt)
     || !isCanonicalUnsignedDecimal(value.next_event_ordinal) || !(value.last_offline_report === null || isOfflineReport(value.last_offline_report))) return false;
@@ -272,6 +306,11 @@ export function isCoreRecord(value: unknown): value is CoreRecord {
   if (execution.state === "planning" && (value.task === null || execution.route.length !== 0 || execution.motion !== null || execution.waiting_reason !== null)) return false;
   if ((execution.state === "waiting" || execution.state === "moving") && value.task === null) return false;
   if (execution.state === "waiting" && execution.motion !== null) return false;
+  if (execution.state === "acting" && (value.task?.kind !== "Gather" || execution.action === null || execution.target_placement_id !== execution.action.placement_id)) return false;
+  if (execution.state !== "acting" && execution.action !== null) return false;
+  if (execution.state === "acting" && execution.action !== null
+    && (BigInt(execution.action.start_world_time_ms) > BigInt(value.world_time_ms)
+      || BigInt(value.world_time_ms) >= BigInt(execution.action.end_world_time_ms))) return false;
   if (execution.state === "moving") {
     const motion = execution.motion;
     if (motion === null || execution.route.length < 2 || execution.route_index >= execution.route.length - 1
@@ -301,11 +340,32 @@ export function isMetaRecord(value: unknown): value is MetaRecord {
     && isHexChecksum(value.core_checksum_sha256) && isSafeUint(value.world_chunk_count);
 }
 
+function isKnownPlacement(value: unknown): value is KnownResourcePlacement {
+  return exactObject(value, ["placementId", "prototypeId", "source", "tileX", "tileY", "point", "availability", "spawnCycle", "depletedWorldTimeMs", "nextAvailableWorldTimeMs"])
+    && isPlacementId(value.placementId) && value.prototypeId === "wild_fiber" && (value.source === "ambient" || value.source === "guarantee")
+    && isCanonicalSignedDecimal(value.tileX, -(1n << 31n), (1n << 31n) - 1n)
+    && isCanonicalSignedDecimal(value.tileY, -(1n << 31n), (1n << 31n) - 1n) && isWorldPoint(value.point)
+    && value.point.x === (BigInt(value.tileX) * 1024n + 512n).toString()
+    && value.point.y === (BigInt(value.tileY) * 1024n + 512n).toString()
+    && (value.availability === "active" || value.availability === "depleted") && isSafeUint(value.spawnCycle)
+    && (value.depletedWorldTimeMs === null || isCanonicalUnsignedDecimal(value.depletedWorldTimeMs))
+    && (value.nextAvailableWorldTimeMs === null || isCanonicalUnsignedDecimal(value.nextAvailableWorldTimeMs))
+    && (value.availability === "active"
+      ? value.depletedWorldTimeMs === null && value.nextAvailableWorldTimeMs === null
+      : value.depletedWorldTimeMs !== null && value.nextAvailableWorldTimeMs !== null
+        && BigInt(value.nextAvailableWorldTimeMs) > BigInt(value.depletedWorldTimeMs));
+}
+
 export function isWorldChunkRecord(value: unknown): value is WorldChunkRecord {
-  return exactObject(value, ["chunk_key", "chunk_x", "chunk_y", "revealed_bits", "revision", "record_checksum_sha256"])
-    && isChunkIdentity(value.chunk_key, value.chunk_x, value.chunk_y) && value.revealed_bits instanceof Uint8Array
-    && value.revealed_bits.byteLength === FOG_BYTES_PER_CHUNK && isSafeUint(value.revision) && value.revision >= 1
-    && isHexChecksum(value.record_checksum_sha256);
+  if (!exactObject(value, ["chunk_key", "chunk_x", "chunk_y", "revealed_bits", "known_placements", "revision", "record_checksum_sha256"])
+    || !isChunkIdentity(value.chunk_key, value.chunk_x, value.chunk_y) || !(value.revealed_bits instanceof Uint8Array)
+    || value.revealed_bits.byteLength !== FOG_BYTES_PER_CHUNK || !Array.isArray(value.known_placements)
+    || !value.known_placements.every(isKnownPlacement)) return false;
+  const placements = value.known_placements;
+  return new Set(placements.map((placement) => placement.placementId)).size === placements.length
+    && placements.every((placement, index) => index === 0 || placements[index - 1]!.placementId < placement.placementId)
+    && placements.every((placement) => `${floorDiv(BigInt(placement.tileX), 64n)},${floorDiv(BigInt(placement.tileY), 64n)}` === value.chunk_key)
+    && isSafeUint(value.revision) && value.revision >= 1 && isHexChecksum(value.record_checksum_sha256);
 }
 
 function isResumeClaim(value: unknown): value is ResumeClaimRecord {
@@ -321,9 +381,10 @@ function isResumeClaim(value: unknown): value is ResumeClaimRecord {
 }
 
 function isBackupChunk(value: unknown): value is BackupChunkV1 {
-  return exactObject(value, ["chunkKey", "chunkX", "chunkY", "revealedBase64", "revision"])
+  return exactObject(value, ["chunkKey", "chunkX", "chunkY", "revealedBase64", "knownPlacements", "revision"])
     && isChunkIdentity(value.chunkKey, value.chunkX, value.chunkY) && typeof value.revealedBase64 === "string"
     && (() => { try { base64ToFogBits(value.revealedBase64); return true; } catch { return false; } })()
+    && Array.isArray(value.knownPlacements) && value.knownPlacements.every(isKnownPlacement)
     && isSafeUint(value.revision) && value.revision >= 1;
 }
 
@@ -349,7 +410,7 @@ async function materializeBackup(snapshot: PersistedSnapshot, databaseVersion: n
     core: snapshot.core,
     chunks: snapshot.chunks.map((chunk) => ({
       chunkKey: chunk.chunk_key, chunkX: chunk.chunk_x, chunkY: chunk.chunk_y,
-      revealedBase64: fogBitsToBase64(chunk.revealed_bits), revision: chunk.revision,
+      revealedBase64: fogBitsToBase64(chunk.revealed_bits), knownPlacements: chunk.known_placements, revision: chunk.revision,
     })),
   };
   return { ...withoutChecksum, checksum: await sha256Canonical(withoutChecksum) };
@@ -416,12 +477,12 @@ async function parseBackup(bytes: Uint8Array, generatorVersion: number): Promise
     sha256Canonical(core),
     ...orderedChunks.map((chunk) => checksumChunkFields({
       chunk_key: chunk.chunkKey, chunk_x: chunk.chunkX, chunk_y: chunk.chunkY,
-      revealed_bits: base64ToFogBits(chunk.revealedBase64), revision: chunk.revision,
+      revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: chunk.knownPlacements, revision: chunk.revision,
     })),
   ]);
   const worldChunks: WorldChunkRecord[] = orderedChunks.map((chunk, index) => ({
     chunk_key: chunk.chunkKey, chunk_x: chunk.chunkX, chunk_y: chunk.chunkY,
-    revealed_bits: base64ToFogBits(chunk.revealedBase64), revision: chunk.revision,
+    revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: chunk.knownPlacements, revision: chunk.revision,
     record_checksum_sha256: chunkChecksums[index]!,
   }));
   const meta: MetaRecord = {
@@ -486,13 +547,15 @@ function classifyBackupSpecificFields(metadata: Record<string, unknown>, core: u
     if (timeError !== null) return timeError;
     const pointError = checkPoint(record.position);
     if (pointError !== null) return pointError;
+    const anchorError = checkPoint(record.camp_anchor);
+    if (anchorError !== null) return anchorError;
     const task = record.task;
     if (task !== null && typeof task === "object" && !Array.isArray(task)) {
       const persistedTask = task as Record<string, unknown>;
       if (!isTaskId(persistedTask.task_id)) return new BackupError("backup/invalid_id", "backup task ID is invalid");
       const taskTimeError = checkUnsigned(persistedTask.created_world_time_ms);
       if (taskTimeError !== null) return taskTimeError;
-      if (persistedTask.destination !== null) {
+      if (persistedTask.kind === "Explore" && persistedTask.destination !== null) {
         const destinationError = checkPoint(persistedTask.destination);
         if (destinationError !== null) return destinationError;
       }
@@ -533,12 +596,13 @@ export async function commandPayloadSha256(canonicalPayload: string): Promise<st
   return bytesToHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalPayload)));
 }
 
-async function checksumChunkFields(chunk: Pick<WorldChunkRecord, "chunk_key" | "chunk_x" | "chunk_y" | "revealed_bits" | "revision">): Promise<string> {
+async function checksumChunkFields(chunk: Pick<WorldChunkRecord, "chunk_key" | "chunk_x" | "chunk_y" | "revealed_bits" | "known_placements" | "revision">): Promise<string> {
   return sha256Canonical({
     chunk_key: chunk.chunk_key,
     chunk_x: chunk.chunk_x,
     chunk_y: chunk.chunk_y,
     revealed_base64: fogBitsToBase64(chunk.revealed_bits),
+    known_placements: chunk.known_placements,
     revision: chunk.revision,
   });
 }
@@ -655,7 +719,21 @@ async function validateSnapshot(snapshot: PersistedSnapshot, generatorVersion: n
     || chunks.some((chunk) => chunk.revision > core.revision)) {
     throw new PersistenceError("storage/integrity_failed", "save revision, world time, or chunk count is inconsistent");
   }
-  if (resumeClaim !== null && (resumeClaim.base_revision !== core.revision || resumeClaim.base_world_time_ms !== core.world_time_ms
+  const placementIds = chunks.flatMap((chunk) => chunk.known_placements.map((placement) => placement.placementId));
+  if (new Set(placementIds).size !== placementIds.length) {
+    throw new PersistenceError("storage/integrity_failed", "known placement IDs are not globally unique");
+  }
+  if (core.execution.state === "acting") {
+    const action = core.execution.action;
+    const target = action === null ? undefined : chunks.flatMap((chunk) => chunk.known_placements)
+      .find((placement) => placement.placementId === action.placement_id);
+    if (target === undefined || target.availability !== "active") {
+      throw new PersistenceError("storage/integrity_failed", "active resource action does not reference an active known placement");
+    }
+  }
+  if (resumeClaim !== null && (resumeClaim.base_revision > core.revision
+    || BigInt(resumeClaim.base_world_time_ms) > BigInt(core.world_time_ms)
+    || BigInt(core.world_time_ms) - BigInt(resumeClaim.base_world_time_ms) > BigInt(resumeClaim.credited_duration_ms)
     || resumeClaim.from_wall_clock_ms !== meta.committed_wall_clock_ms)) {
     throw new PersistenceError("storage/integrity_failed", "offline claim does not match its committed base");
   }
@@ -749,18 +827,19 @@ export class GameplayStorage {
     return snapshot;
   }
 
-  async create(core: CoreRecord, revealedChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string }>[], wallClockMs: number): Promise<PersistedSnapshot> {
+  async create(core: CoreRecord, worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>[], wallClockMs: number): Promise<PersistedSnapshot> {
     try {
       if (this.currentSnapshot !== null) throw new PersistenceError("storage/integrity_failed", "a committed save already exists");
       if (!isCoreRecord(core) || core.revision !== 1 || core.command_receipts.length !== 1
         || core.command_receipts[0]?.command_type !== "CreateWorld" || core.command_receipts[0].save_revision !== 1
         || !isSafeUint(wallClockMs)) throw new PersistenceError("storage/integrity_failed", "new-world snapshot is invalid");
-      const chunksWithoutChecksums = revealedChunks.map((chunk) => {
+      const chunksWithoutChecksums = worldChunks.map((chunk) => {
         const [chunkX, chunkY] = chunk.chunkKey.split(",");
         if (chunkX === undefined || chunkY === undefined || !isChunkIdentity(chunk.chunkKey, chunkX, chunkY)) {
           throw new PersistenceError("storage/integrity_failed", "new-world fog chunk identity is invalid");
         }
-        return { chunk_key: chunk.chunkKey, chunk_x: chunkX, chunk_y: chunkY, revealed_bits: base64ToFogBits(chunk.revealedBase64), revision: 1 };
+        const knownPlacements = [...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1);
+        return { chunk_key: chunk.chunkKey, chunk_x: chunkX, chunk_y: chunkY, revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: knownPlacements, revision: 1 };
       }).sort((left, right) => compareChunkKeysNumeric(left.chunk_key, right.chunk_key));
       const [coreChecksum, ...chunkChecksums] = await Promise.all([
         sha256Canonical(core),
@@ -799,7 +878,7 @@ export class GameplayStorage {
 
   async commit(
     core: CoreRecord,
-    revealedChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string }>[],
+    worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>[],
     wallClockMs: number,
     deleteResumeClaim = false,
   ): Promise<PersistedSnapshot> {
@@ -810,8 +889,8 @@ export class GameplayStorage {
         throw new PersistenceError("storage/integrity_failed", "commit core or revision is invalid");
       }
       const previousChunks = new Map(previous.chunks.map((chunk) => [chunk.chunk_key, chunk]));
-      const incoming = new Map<string, Readonly<{ chunkKey: string; revealedBase64: string }>>();
-      for (const chunk of revealedChunks) {
+      const incoming = new Map<string, Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>>();
+      for (const chunk of worldChunks) {
         const [chunkX, chunkY] = chunk.chunkKey.split(",");
         if (chunkX === undefined || chunkY === undefined || !isChunkIdentity(chunk.chunkKey, chunkX, chunkY)
           || incoming.has(chunk.chunkKey)) throw new PersistenceError("storage/integrity_failed", "commit fog chunk identity is invalid");
@@ -833,12 +912,20 @@ export class GameplayStorage {
               throw new PersistenceError("storage/integrity_failed", "commit cannot clear revealed fog bits");
             }
           }
-          if (fogBitsToBase64(prior.revealed_bits) === chunk.revealedBase64) continue;
+          const priorById = new Map(prior.known_placements.map((placement) => [placement.placementId, placement]));
+          const incomingById = new Map(chunk.knownPlacements.map((placement) => [placement.placementId, placement]));
+          if ([...priorById.keys()].some((id) => !incomingById.has(id))) {
+            throw new PersistenceError("storage/integrity_failed", "commit cannot remove known placements");
+          }
+          if (fogBitsToBase64(prior.revealed_bits) === chunk.revealedBase64
+            && canonicalJson(prior.known_placements) === canonicalJson([...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1))) continue;
         }
         const [chunkX, chunkY] = chunk.chunkKey.split(",") as [string, string];
         dirtyWithoutChecksums.push({
           chunk_key: chunk.chunkKey, chunk_x: chunkX, chunk_y: chunkY,
-          revealed_bits: nextBits, revision: core.revision,
+          revealed_bits: nextBits,
+          known_placements: [...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1),
+          revision: core.revision,
         });
       }
       const [coreChecksum, ...dirtyChecksums] = await Promise.all([

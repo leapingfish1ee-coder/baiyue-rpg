@@ -5,7 +5,11 @@ export const FOG_BYTES_PER_CHUNK = RUNTIME_CHUNK_AREA / 8;
 
 export type FogMap = Map<string, Uint8Array>;
 
-export type RevealResult = Readonly<{ newlyRevealed: number; touchedChunkKeys: readonly string[] }>;
+export type RevealResult = Readonly<{
+  newlyRevealed: number;
+  touchedChunkKeys: readonly string[];
+  newlyRevealedTiles: readonly Readonly<{ x: bigint; y: bigint }>[];
+}>;
 
 export function fogChunkKey(chunkX: bigint, chunkY: bigint): string {
   return `${chunkX},${chunkY}`;
@@ -48,6 +52,7 @@ export function revealObservation(fog: FogMap, centerX: bigint, centerY: bigint,
   const centerTileX = tileCoordinate(centerX);
   const centerTileY = tileCoordinate(centerY);
   const touched = new Set<string>();
+  const newlyRevealedTiles: Array<Readonly<{ x: bigint; y: bigint }>> = [];
   let newlyRevealed = 0;
 
   for (let offsetY = -radiusTiles - 1; offsetY <= radiusTiles + 1; offsetY += 1) {
@@ -60,12 +65,13 @@ export function revealObservation(fog: FogMap, centerX: bigint, centerY: bigint,
       if (dx * dx + dy * dy > radiusSquared) continue;
       if (revealTile(fog, tileX, tileY)) {
         newlyRevealed += 1;
+        newlyRevealedTiles.push({ x: tileX, y: tileY });
         const size = BigInt(RUNTIME_CHUNK_SIZE);
         touched.add(fogChunkKey(floorDiv(tileX, size), floorDiv(tileY, size)));
       }
     }
   }
-  return { newlyRevealed, touchedChunkKeys: [...touched].sort(compareChunkKeysNumeric) };
+  return { newlyRevealed, touchedChunkKeys: [...touched].sort(compareChunkKeysNumeric), newlyRevealedTiles };
 }
 
 export function fogBitsToBase64(bits: Uint8Array): string {

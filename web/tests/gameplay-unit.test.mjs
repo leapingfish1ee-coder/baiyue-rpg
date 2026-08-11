@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { canonicalJson, compareCodePoints } from "../src/gameplay/canonical-json.ts";
+import { ambientPlacementCandidate, authoritativeGatherDuration, contentCellForTile } from "../src/gameplay/content.ts";
 import { GameplayEngine } from "../src/gameplay/engine.ts";
 import { revealObservation, revealTile, revealedTiles } from "../src/gameplay/fog.ts";
 import { selectIntersectingCircleByStableId, sweptSegmentIntersectsCircle } from "../src/gameplay/geometry.ts";
@@ -362,6 +363,61 @@ function createLandEngine() {
   });
   return { engine, requests };
 }
+
+test("phase 2A content placement fixes three reachable camp guarantees and Euclidean negative cells", () => {
+  const { engine } = createLandEngine();
+  assert.deepEqual(engine.guaranteePlacements, [
+    { placementId: "place:wild-fiber:guarantee:initial-observation", prototypeId: "wild_fiber", source: "guarantee", tileX: "2", tileY: "-3", point: { x: "2560", y: "-2560" } },
+    { placementId: "place:wild-fiber:guarantee:ring-a", prototypeId: "wild_fiber", source: "guarantee", tileX: "7", tileY: "-18", point: { x: "7680", y: "-17920" } },
+    { placementId: "place:wild-fiber:guarantee:ring-b", prototypeId: "wild_fiber", source: "guarantee", tileX: "15", tileY: "-20", point: { x: "15872", y: "-19968" } },
+  ]);
+  const ambient = ambientPlacementCandidate("20260809", { x: "512", y: "512" }, -1n, -1n);
+  assert.equal(contentCellForTile(BigInt(ambient.tileX)), -1n);
+  assert.equal(contentCellForTile(BigInt(ambient.tileY)), -1n);
+  assert.deepEqual(authoritativeGatherDuration(1), { durationMs: 6000n, skillSpeedBps: 0 });
+  assert.deepEqual(engine.toReadModel().knownTargetPrototypeIds, ["wild_fiber"]);
+});
+
+test("one 6000ms gather action atomically depletes the node and settles fiber, XP, and task count", () => {
+  const { engine } = createLandEngine();
+  engine.setTask("cmd:0123456789abcdef:99", { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: 1 });
+  for (let iteration = 0; iteration < 20 && engine.snapshot().activityState !== "acting"; iteration += 1) {
+    driveEngine(engine, () => new Uint8Array(4096).fill(3));
+    const activity = engine.toReadModel().activity;
+    if (activity.state === "moving") engine.advanceBy(BigInt(activity.etaMs));
+  }
+  const action = engine.toReadModel().activity.action;
+  assert.equal(action?.durationMs, "6000");
+  assert.equal(action?.remainingMs, "6000");
+  assert.equal(action?.skillSpeedBps, 0);
+  const saved = engine.persistedState();
+  const reloaded = new GameplayEngine(3);
+  reloaded.restore({
+    seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: saved.position, campAnchor: saved.campAnchor,
+    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, fiber: saved.fiber, task: saved.task,
+    executionState: saved.execution.state, routePurpose: saved.execution.routePurpose,
+    targetPlacementId: saved.execution.targetPlacementId, action: saved.execution.action,
+    waitingReason: saved.execution.waitingReason, worldChunks: saved.worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
+  });
+  driveEngine(reloaded, () => new Uint8Array(4096).fill(3));
+  assert.equal(engine.advanceBy(5999n), 0n);
+  assert.equal(engine.snapshot().fiber, 0);
+  assert.equal(engine.advanceBy(1n), 0n);
+  const settled = engine.snapshot();
+  assert.equal(settled.fiber, 1);
+  assert.equal(settled.gatheringXp, 6);
+  assert.equal(settled.task?.kind, "Gather");
+  assert.equal(settled.task?.completedQuantity, 1);
+  assert.equal(settled.activityState, "waiting");
+  assert.equal(engine.toReadModel().map.resourcePlacements[0]?.state, "depleted");
+  assert.equal(engine.needsImmediateCommit, true);
+  assert.equal(reloaded.advanceBy(6000n), 0n);
+  assert.deepEqual(
+    { fiber: reloaded.snapshot().fiber, gatheringXp: reloaded.snapshot().gatheringXp, task: reloaded.snapshot().task, placements: reloaded.toReadModel().map.resourcePlacements },
+    { fiber: settled.fiber, gatheringXp: settled.gatheringXp, task: settled.task, placements: engine.toReadModel().map.resourcePlacements },
+    "one-shot offline-style advance and reload use the same action settlement",
+  );
+});
 
 test("pure engine closes create world, explore, advance, and cancel with explicit terrain effects", () => {
   const requests = [];

@@ -36,3 +36,31 @@ test("create, explore, cancel, choose a destination, save, and restore", async (
   await expect(page.locator("#save-state")).toContainText("已保存");
   await expect(page.locator("#player-position")).toHaveText(selectedTile);
 });
+
+test("discover wild fiber, settle one real gather atomically, complete, and reload", async ({ page }) => {
+  await page.goto("./");
+  await expect(page.locator("#create-world")).toBeEnabled({ timeout: 30_000 });
+  await page.locator("#world-seed").fill("20260809");
+  await page.locator("#create-world").click();
+
+  await expect(page.locator("#gather-controls")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#resource-list li").first()).toContainText("野生纤维");
+  await page.locator("#gather-quantity").fill("1");
+  await page.locator("#gather-finite").click();
+
+  await expect(page.locator("#activity-state")).toContainText("采集中", { timeout: 30_000 });
+  await expect(page.locator("#fiber-quantity")).toHaveText("1", { timeout: 30_000 });
+  await expect(page.locator("#gathering-xp")).toContainText("6 / 100 XP");
+  await expect(page.locator("#resource-list li").first()).not.toContainText("可采集");
+  await expect(page.locator("#gather-progress")).toHaveText("1 / 1");
+  await expect(page.locator("#activity-state")).toContainText("采集完成");
+  await expect(page.locator("#fiber-quantity")).toHaveText("1");
+  await expect(page.locator("#gathering-xp")).toContainText("6 / 100 XP");
+  await expect(page.locator("#save-state")).toContainText("已保存");
+
+  await page.reload();
+  await expect(page.locator("#journey-panel")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#gather-progress")).toHaveText("1 / 1");
+  await expect(page.locator("#fiber-quantity")).toHaveText("1");
+  await expect(page.locator("#gathering-xp")).toContainText("6 / 100 XP");
+});

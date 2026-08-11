@@ -34,6 +34,21 @@ const hpLabel = required<HTMLElement>("#hp-label");
 const revealedCount = required<HTMLElement>("#revealed-count");
 const radiusLabel = required<HTMLElement>("#radius-label");
 const etaLabel = required<HTMLElement>("#eta-label");
+const gatherControls = required<HTMLElement>("#gather-controls");
+const gatherUnknown = required<HTMLElement>("#gather-unknown");
+const gatherQuantity = required<HTMLInputElement>("#gather-quantity");
+const gatherFiniteButton = required<HTMLButtonElement>("#gather-finite");
+const gatherContinuousButton = required<HTMLButtonElement>("#gather-continuous");
+const gatherProgress = required<HTMLElement>("#gather-progress");
+const gatheringLevel = required<HTMLElement>("#gathering-level");
+const gatheringXp = required<HTMLElement>("#gathering-xp");
+const gatheringSpeed = required<HTMLElement>("#gathering-speed");
+const fiberQuantity = required<HTMLElement>("#fiber-quantity");
+const resourceCount = required<HTMLElement>("#resource-count");
+const resourceList = required<HTMLUListElement>("#resource-list");
+const bottomIntent = required<HTMLElement>("#bottom-intent");
+const bottomPhase = required<HTMLElement>("#bottom-phase");
+const bottomRemaining = required<HTMLElement>("#bottom-remaining");
 const continuousButton = required<HTMLButtonElement>("#explore-continuous");
 const destinationModeButton = required<HTMLButtonElement>("#choose-destination");
 const cancelButton = required<HTMLButtonElement>("#cancel-task");
@@ -99,6 +114,7 @@ function reasonLabel(reason: ActivityReason | null): string | null {
     case "storage_write_failed": return "保存失败，探索已暂停";
     case "incompatible_save": return "存档版本不兼容";
     case "active_in_other_tab": return "世界已在另一个标签页运行";
+    case "integrity/quantity_overflow": return "数量超过安全上限，世界已暂停";
     case "undefined_failure": return "探索已暂停";
   }
 }
@@ -106,9 +122,10 @@ function reasonLabel(reason: ActivityReason | null): string | null {
 function activityLabel(model: GameplayReadModelV1): string {
   switch (model.activity.state) {
     case "idle": return "空闲";
-    case "planning": return "规划路线";
-    case "moving": return "探索中";
-    case "waiting": return reasonLabel(model.activity.reason) ?? "等待中";
+    case "planning": return model.activity.phase === "acquiring_target" ? "索取采集节点" : model.activity.phase === "auto_exploring" ? "自动探索" : "规划路线";
+    case "moving": return model.activity.phase === "moving_to_target" ? "前往资源" : model.activity.phase === "auto_exploring" ? "自动探索" : "探索中";
+    case "acting": return model.activity.action === null ? "采集中" : `采集中 · ${formatDuration(model.activity.action.remainingMs)}`;
+    case "waiting": return model.task?.kind === "Gather" && model.activity.reason?.code === "TaskCompleted" ? "采集完成" : reasonLabel(model.activity.reason) ?? "等待中";
     case "paused": return "已暂停";
   }
 }
@@ -132,6 +149,51 @@ function tileOf(point: WorldPoint): Readonly<{ x: bigint; y: bigint }> {
     return value % divisor < 0n ? quotient - 1n : quotient;
   };
   return { x: floor(BigInt(point.x)), y: floor(BigInt(point.y)) };
+}
+
+function phaseLabel(model: GameplayReadModelV1): string {
+  const labels: Record<GameplayReadModelV1["activity"]["phase"], string> = {
+    idle: "空闲", exploring: "探索", acquiring_target: "索取最近节点", moving_to_target: "前往采集点",
+    gathering: "采集行动", auto_exploring: "为采集自动探索", waiting: "待机", paused: "暂停",
+  };
+  return labels[model.activity.phase];
+}
+
+function syncGatheringUi(model: GameplayReadModelV1): void {
+  const known = model.knownTargetPrototypeIds.includes("wild_fiber");
+  gatherControls.hidden = !known;
+  gatherUnknown.hidden = known;
+  const task = model.task;
+  gatherProgress.textContent = task?.kind === "Gather"
+    ? task.quantity === null ? `${task.completedQuantity} · 持续` : `${task.completedQuantity} / ${task.quantity}`
+    : "未设置";
+
+  const skill = model.skills?.gathering;
+  if (skill !== undefined) {
+    gatheringLevel.textContent = `采集 Lv.${skill.level}`;
+    gatheringXp.textContent = skill.nextLevelXp === null
+      ? `${skill.totalXp.toLocaleString()} XP · 满级`
+      : `${skill.currentLevelXp.toLocaleString()} / ${skill.nextLevelXp.toLocaleString()} XP`;
+    gatheringSpeed.textContent = `${skill.skillSpeedBps} bps`;
+  }
+  fiberQuantity.textContent = String(model.inventory?.items.find((item) => item.itemId === "fiber")?.quantity ?? 0);
+
+  resourceCount.textContent = String(model.map.resourcePlacements.length);
+  resourceList.replaceChildren(...model.map.resourcePlacements.map((placement) => {
+    const item = document.createElement("li");
+    const state = placement.state === "active" ? "可采集" : placement.state === "depleted" ? "已耗尽" : `重生 ${formatDuration(placement.respawnRemainingMs ?? "0")}`;
+    item.dataset.state = placement.state;
+    item.innerHTML = `<span aria-hidden="true"></span><div><strong>${placement.displayName}</strong><small>${state}</small></div>`;
+    return item;
+  }));
+
+  bottomIntent.textContent = task === null ? "无任务" : task.kind === "Gather"
+    ? `采集野生纤维 · ${task.quantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.quantity}`}`
+    : task.mode === "continuous" ? "持续探索" : "目的地探索";
+  bottomPhase.textContent = phaseLabel(model);
+  bottomRemaining.textContent = model.activity.action !== null
+    ? `剩余 ${formatDuration(model.activity.action.remainingMs)} · ${model.activity.action.skillSpeedBps} bps`
+    : model.activity.etaMs !== null ? `移动剩余 ${formatDuration(model.activity.etaMs)}` : reasonLabel(model.activity.reason) ?? "—";
 }
 
 function syncProductUi(model: GameplayReadModelV1): void {
@@ -181,6 +243,7 @@ function syncProductUi(model: GameplayReadModelV1): void {
   }
   etaLabel.textContent = model.activity.etaMs === null ? "—" : formatDuration(model.activity.etaMs);
   cancelButton.hidden = model.task === null;
+  syncGatheringUi(model);
 
   const saveLabels: Record<GameplayReadModelV1["save"]["state"], string> = {
     none: "尚未建档", saving: "正在保存", saved: `已保存 · r${model.save.revision}`,
@@ -201,7 +264,7 @@ function syncProductUi(model: GameplayReadModelV1): void {
     } else {
       offlineTitle.textContent = `旅程继续了 ${formatDuration(model.offlineReport.creditedDurationMs)}`;
       const discarded = BigInt(model.offlineReport.discardedDurationMs);
-      offlineSummary.textContent = `获得 ${model.offlineReport.xpGained} XP，揭露 ${model.offlineReport.revealedTiles} 格。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
+      offlineSummary.textContent = `探索 XP +${model.offlineReport.xpGained}，采集 XP +${model.offlineReport.gatheringXpGained}，纤维 +${model.offlineReport.fiberGained}，揭露 ${model.offlineReport.revealedTiles} 格。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
     }
   }
 }
@@ -210,7 +273,7 @@ client.subscribe(syncProductUi);
 
 function setBusy(busy: boolean): void {
   commandBusy = busy;
-  for (const button of [createButton, continuousButton, destinationModeButton, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
+  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
     button.disabled = busy;
   }
 }
@@ -244,6 +307,42 @@ continuousButton.addEventListener("click", () => {
   selectedDestination = null;
   syncDestinationUi();
   void runCommand(() => client.command({ type: "SetTask", task: { kind: "Explore", mode: "continuous", destination: null } }), "已开始持续探索");
+});
+
+function requestedGatherQuantity(): number | null {
+  const text = gatherQuantity.value.trim();
+  if (text === "") return null;
+  const quantity = Number(text);
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new RangeError("采集数量必须是正安全整数");
+  return quantity;
+}
+
+gatherQuantity.addEventListener("input", () => {
+  const text = gatherQuantity.value.trim();
+  gatherFiniteButton.textContent = /^\d+$/.test(text) ? `采集 ×${text}` : "设置采集";
+});
+
+gatherFiniteButton.addEventListener("click", () => {
+  let quantity: number;
+  try {
+    const requested = requestedGatherQuantity();
+    if (requested === null) throw new RangeError("请输入采集数量，或选择持续采集");
+    quantity = requested;
+  } catch (error: unknown) {
+    showToast(error instanceof Error ? error.message : "采集数量无效", true);
+    return;
+  }
+  void runCommand(
+    () => client.command({ type: "SetTask", task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity } }),
+    `已设置采集 ×${quantity}`,
+  );
+});
+
+gatherContinuousButton.addEventListener("click", () => {
+  void runCommand(
+    () => client.command({ type: "SetTask", task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: null } }),
+    "已开始持续采集",
+  );
 });
 
 destinationModeButton.addEventListener("click", () => {
@@ -415,9 +514,25 @@ function drawGameplayOverlay(): void {
     }
   }
 
+  for (const placement of model.map.resourcePlacements) {
+    const world = pointWorldPixels(placement.point);
+    const screen = worldToScreen(world.x, world.y);
+    const radius = placement.placementId === model.activity.targetPlacementId ? 9 : 6;
+    context.save();
+    context.fillStyle = placement.state === "active" ? "#85d59a" : placement.state === "depleted" ? "#65736d" : "#d3a85e";
+    context.strokeStyle = placement.placementId === model.activity.targetPlacementId ? "#fff0b5" : "rgba(5, 15, 11, .9)";
+    context.lineWidth = placement.placementId === model.activity.targetPlacementId ? 3 : 2;
+    context.beginPath();
+    context.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.restore();
+  }
+
   if (model.activity.route.length > 0) {
     context.save();
-    context.strokeStyle = "rgba(247, 209, 137, .82)";
+    context.strokeStyle = model.activity.routePurpose === "task_target" ? "rgba(133, 213, 154, .9)"
+      : model.activity.routePurpose === "auto_explore" ? "rgba(111, 188, 191, .9)" : "rgba(247, 209, 137, .82)";
     context.lineWidth = 2;
     context.setLineDash([7, 6]);
     context.beginPath();

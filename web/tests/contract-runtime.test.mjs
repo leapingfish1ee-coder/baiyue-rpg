@@ -21,9 +21,12 @@ const readModel = {
   generatorVersion: 3,
   player: null,
   task: null,
-  activity: { state: "idle", route: [], routeIndex: 0, etaMs: null, progressPermille: null, reason: null },
+  activity: { state: "idle", phase: "idle", route: [], routePurpose: null, routeIndex: 0, etaMs: null, progressPermille: null, targetPlacementId: null, action: null, reason: null },
   exploration: null,
-  map: { revealedChunks: [], selectedDestination: null },
+  skills: null,
+  inventory: null,
+  knownTargetPrototypeIds: [],
+  map: { revealedChunks: [], resourcePlacements: [], selectedDestination: null },
   save: { state: "none", revision: 0, committedWallClockMs: null, localOnly: true, evictionWarning: false, lastError: null },
   offlineReport: null,
 };
@@ -47,6 +50,7 @@ test("every main-to-worker branch is exact and validates IDs, bounds, equality, 
     { type: "command", protocolVersion: 1, requestId, command: { type: "CreateWorld", commandId, seed: "20260809", seedSource: "manual", wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Explore", mode: "continuous", destination: null }, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Explore", mode: "destination", destination: point }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: 10 }, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "CancelTask", commandId, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "ExportSave", commandId, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "ImportSave", commandId, backupUtf8: new ArrayBuffer(2), confirmed: true, wallClockMs: 1 } },
@@ -107,14 +111,17 @@ test("a fully populated read model validates canonical fog and signed clock skew
   const populated = structuredClone(readModel);
   populated.readModelRevision = 4;
   populated.startup = "ready";
-  populated.player = { position: point, hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_1" };
+  populated.player = { position: point, hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2a" };
   populated.exploration = { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, observationRadiusTiles: 4, revealedTileCount: 49 };
+  populated.skills = { gathering: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 } };
+  populated.inventory = { items: [{ itemId: "fiber", displayName: "纤维", quantity: 1 }] };
+  populated.knownTargetPrototypeIds = ["wild_fiber"];
   populated.map.revealedChunks = [{ chunkKey: "0,0", chunkX: "0", chunkY: "0", revealedBase64: fogBase64 }];
   populated.save = { state: "saved", revision: 1, committedWallClockMs: 10, localOnly: true, evictionWarning: false, lastError: null };
   populated.offlineReport = {
     claimId: "claim:1:5", rawElapsedMs: -5, clockSkew: "backward", creditedDurationMs: "0", discardedDurationMs: "0",
     fromWorldTimeMs: "10", toWorldTimeMs: "10", taskBefore: null, taskAfter: null, xpGained: 0, levelsGained: 0,
-    revealedTiles: 0, stopReason: null, committedRevision: 1,
+    revealedTiles: 0, fiberGained: 0, gatheringXpGained: 0, stopReason: null, committedRevision: 1,
   };
   assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: populated }), true);
   populated.offlineReport.creditedDurationMs = "1";
