@@ -1,170 +1,32 @@
-# Baiyue RPG — Hierarchical Terrain MVP
+# Baiyue RPG
 
-Browser MVP for deterministic, streamed, effectively-infinite 2D terrain where one macro-map pixel expands into a real playable TileMap region.
+Baiyue RPG 的长期目标是单人放置冒险、碎片叙事 RPG。当前仓库仍是确定性流式地形引擎 MVP，不是可玩 RPG。
 
-## Current world model
+## 当前能力
 
-```text
-WorldSeed
-   ↓
-Macro map: elevation + moisture
-   ↓ each pixel = one MacroCell
-3×3 macro neighborhood + absolute-coordinate local detail
-   ↓
-BaseTerrain plane (64×64)
-   ├─ DeepWater
-   ├─ Water
-   ├─ Sand
-   ├─ Land      ← primary walkable surface
-   ├─ Rock
-   └─ Snow
-   ↓
-Decoration plane (64×64, Land only)
-   ├─ None
-   ├─ Grass     ← sparse visual modifier
-   └─ Grove     ← clustered + singleton modifier
-   ↓
-Web Worker → one 8192-byte ArrayBuffer → two zero-copy Uint8Array views
-```
+- Rust/WASM 按 `seed` 和 chunk 坐标生成确定性 `64×64` 地形。
+- Web Worker 在 UI 线程外生成并流式加载 chunk。
+- Canvas2D 提供完整静态渲染，WebGL2 提供动态纹理、曝光和世界空间云影。
+- Terrain Sheet v3 支持浏览器上传、预览和本地保存。
 
-The important invariants are:
+当前没有角色、任务、技能成长、战斗、探索、导航、碰撞、游戏状态持久化或网络/市场系统。浏览器只会保存纹理和调试参数，不会保存世界进度。
 
-```text
-1 macro pixel = 1 streamed runtime chunk = 64 × 64 playable tiles
-1 logical tile art = 32 × 32 px
-1 tile spacing = 4 px
-1 rendered tile pitch = 36 px at zoom 1.0
-```
+## 演示
 
-The 32×32 art size and 4 px spacing belong only to rendering. Rust/WASM generation, persistence and world addressing continue to use integer tile coordinates.
+[GitHub Pages](https://leapingfish1ee-coder.github.io/baiyue-rpg/)
 
-## Base terrain vs decoration
+## 最小快速开始
 
-Generator version 3 separates simulation terrain from visual surface modifiers.
-
-Base terrain IDs:
-
-| ID | BaseTerrain |
-|---:|---|
-| 0 | DeepWater |
-| 1 | Water |
-| 2 | Sand |
-| 3 | Land |
-| 4 | Rock |
-| 5 | Snow |
-
-Decoration IDs:
-
-| ID | Decoration |
-|---:|---|
-| 0 | None |
-| 1 | Grass |
-| 2 | Grove |
-
-Land is now the default result for ordinary non-water/non-mountain elevation. Moisture no longer replaces Land with a different base terrain. Instead it modulates decoration density.
-
-Grass uses a deterministic per-world-tile coordinate hash, so it naturally produces isolated points and small accidental groups. Grove uses sparse deterministic cluster seeds in 8×8 coarse cells plus a low-probability singleton stream, producing small groves while still allowing isolated tree patches. Decorations are generated only when the base terrain is Land.
-
-## Continuity
-
-Macro descriptors are sampled at macro-cell centers. A tile converts its absolute world coordinate back into macro-space and smooth-interpolates the surrounding macro centers. A cell only needs a `3×3` macro neighborhood to evaluate all of its own tiles. Adjacent cells therefore evaluate the same shared macro field instead of running independent random generators.
-
-Local elevation/moisture detail and decoration hashes use absolute world coordinates, so neither base terrain nor decoration randomness resets at a chunk boundary.
-
-## Chunk payload
-
-`generate_chunk(seed, chunk_x, chunk_y)` still performs one WASM call, but version 3 returns two contiguous byte planes:
-
-```text
-bytes 0..4095       BaseTerrain
-bytes 4096..8191    Decoration
-```
-
-The Worker transfers the single owned ArrayBuffer. `ChunkManager` creates two `Uint8Array` views over the same buffer without another payload copy.
-
-## Terrain Sheet v3
-
-The texture tool accepts one strict `48×16` PNG composed of `8×8` cells in a `6×2` layout:
-
-```text
-Row 0: DeepWater | Water | Sand | Land | Rock | Snow
-Row 1: Grass     | Grove | reserved | reserved | reserved | reserved
-```
-
-The first six cells are BaseTerrain textures. Grass and Grove are Decoration textures. The remaining four cells are reserved for future decoration types. Texture cells may be transparent/empty and are interpreted as masks before being tinted by the runtime palette.
-
-## Texture shader
-
-When the WebGL2 texture shader is enabled, Canvas2D keeps responsibility for the black world background and optional dark BaseTerrain colors, while WebGL2 renders all eight active texture slots. The same validated three-octave rotated world-space value-noise function modulates texture brightness for DeepWater, Water, Sand, Land, Rock, Snow, Grass and Grove. Texture displacement is not used.
-
-DeepWater and Water retain their stronger water profiles and ambient color overlay. Other BaseTerrain textures use a deliberately restrained shared profile with terrain-specific multipliers; Grass and Grove use a separate decoration profile. Base textures and decoration textures are issued as separate instanced draw passes so Decoration remains above Land. Uploaded Terrain Sheet textures are re-uploaded into one WebGL2 `TEXTURE_2D_ARRAY` whenever the texture revision changes.
-
-If WebGL2 is unavailable or the shader fails to initialize, the renderer falls back to the existing static Canvas2D texture path.
-
-## Edge contract
-
-`rust/src/macro_world.rs` defines a deterministic symmetric `EdgeContract` for adjacent macro cells. For terrain-only generation the continuous field already solves seams, so the edge signature is reserved for discrete cross-region structures such as rivers, roads, walls/gates and entrances.
-
-## Runtime stack
-
-- Rust/WASM: authoritative macro, base-terrain and decoration generation.
-- FastNoiseLite: deterministic macro fields and local absolute-coordinate detail.
-- SplitMix64 coordinate hashes: sparse Grass/Grove placement independent of visit order.
-- Dedicated Web Worker: generation off the UI thread.
-- TypeScript/Vite: camera, streaming, cache and browser lifecycle.
-- Canvas2D: world background, base colors, grid and static texture fallback.
-- WebGL2 overlay: animated color-noise shading for all BaseTerrain and Decoration texture slots.
-
-No rivers, roads, buildings, collision, navigation, persistence or player edits are generated yet.
-
-## Validation built into Rust tests
-
-The generator tests:
-
-1. same seed + same region is byte deterministic;
-2. different seeds change output;
-3. negative region coordinates map contiguously;
-4. BaseTerrain and Decoration IDs stay in range;
-5. decorations only occur on Land;
-6. Land remains the primary surface while Grass/Grove stay sparse;
-7. adjacent macro neighborhoods share the same continuous field;
-8. opposite sides derive the same `EdgeContract`;
-9. an `8×8` macro region generates identical checksums regardless of visit order.
-
-`GENERATOR_VERSION` is `3` because the semantic world contract changed from one terrain plane to `BaseTerrain + Decoration`.
-
-## Run locally
-
-Prerequisites: Node.js 22+, Rust stable, `wasm32-unknown-unknown`, and `wasm-pack`.
+需要 Node.js 22+、Rust stable、`wasm32-unknown-unknown` 和 `wasm-pack 0.15.0`。
 
 ```bash
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack --locked --version 0.15.0
 cd web
 npm install
 npm run dev
 ```
 
-Rust tests:
+## 文档
 
-```bash
-cd rust
-cargo test
-```
-
-Production build:
-
-```bash
-cd web
-npm run build
-```
-
-## GitHub Pages
-
-Pushes to `main` run Rust tests, compile Rust → WASM, type-check/build the Vite application and deploy `web/dist`.
-
-```text
-https://leapingfish1ee-coder.github.io/baiyue-rpg/
-```
-
-## Next world-generation layer
-
-Keep BaseTerrain and Decoration separate. The next high-value world layer is discrete cross-region structure generation driven by `EdgeContract`: rivers first, then roads/POIs. Collision should remain its own semantic layer rather than being inferred from textures.
+[文档总览](docs/index.md) 是产品需求、架构契约、工程验证和决策记录的入口。贡献前请先阅读 [开发说明](docs/engineering/development.md) 和 [验证标准](docs/engineering/validation.md)。
