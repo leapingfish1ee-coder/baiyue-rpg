@@ -68,6 +68,16 @@
               <p id="task-warning" class="task-warning" hidden></p>
             </div>
             <p id="gather-unknown" class="empty-copy">尚未发现资源。</p>
+            <div class="section-subheading"><strong>狩猎</strong><span id="hunt-progress">尚未发现目标</span></div>
+            <div id="hunt-controls" hidden>
+              <label for="hunt-quantity">击杀数</label>
+              <input id="hunt-quantity" inputmode="numeric" value="1" />
+              <div class="compact-actions">
+                <button id="hunt-finite" class="primary" type="button">狩猎 ×1</button>
+                <button id="hunt-continuous" type="button">持续狩猎</button>
+              </div>
+            </div>
+            <p id="hunt-unknown" class="empty-copy">探索后可发现狩猎目标。</p>
             <div class="section-subheading"><strong>生产</strong><span>手工工艺</span></div>
             <div id="produce-controls">
               <label for="produce-recipe">配方</label>
@@ -88,6 +98,8 @@
             <div class="compact-stat"><span id="woodcutting-level">伐木 Lv.1</span><span id="woodcutting-xp">0 / 100 XP</span><small id="woodcutting-speed">0 bps</small></div>
             <div class="compact-stat"><span id="mining-level">采矿 Lv.1</span><span id="mining-xp">0 / 100 XP</span><small id="mining-speed">0 bps</small></div>
             <div class="compact-stat"><span id="crafting-level">工艺 Lv.1</span><span id="crafting-xp">0 / 100 XP</span><small id="crafting-speed">0 bps</small></div>
+            <div class="compact-stat"><span id="melee-level">近战 Lv.1</span><span id="melee-xp">0 / 100 XP</span><small id="melee-speed">0 bps</small></div>
+            <div class="compact-stat"><span id="stealth-level">潜行 Lv.1</span><span id="stealth-xp">0 / 100 XP</span><small id="stealth-speed">0 bps</small></div>
           </section>
           <section aria-labelledby="inventory-heading">
             <div class="section-heading"><strong id="inventory-heading">库存</strong><span>无容量限制</span></div>
@@ -99,10 +111,23 @@
           </section>
           <section aria-labelledby="equipment-heading">
             <div class="section-heading"><strong id="equipment-heading">装备</strong><span>不自动装备</span></div>
+            <div class="equipment-row"><span>武器</span><strong id="weapon-equipped">破旧短刃</strong><small id="weapon-detail">4–6 伤害</small></div>
             <div class="equipment-row equipment-choice"><span>斧</span><strong id="axe-equipped">—</strong><select id="axe-choice" aria-label="选择斧"></select><button id="axe-toggle" type="button">卸下</button></div>
             <small id="axe-detail" class="equipment-detail"></small>
             <div class="equipment-row equipment-choice"><span>镐</span><strong id="pickaxe-equipped">—</strong><select id="pickaxe-choice" aria-label="选择镐"></select><button id="pickaxe-toggle" type="button">卸下</button></div>
             <small id="pickaxe-detail" class="equipment-detail"></small>
+          </section>
+          <section id="combat-panel" hidden aria-labelledby="combat-heading">
+            <div class="section-heading"><strong id="combat-heading">战斗</strong><span id="combat-trigger">强制遭遇</span></div>
+            <div class="combat-grid">
+              <span>探索者</span><strong id="combat-player-hp">—</strong>
+              <span id="combat-enemy-name">灰鬃野猪</span><strong id="combat-enemy-hp">—</strong>
+            </div>
+            <p id="combat-detail" class="recipe-detail"></p>
+          </section>
+          <section aria-labelledby="enemies-heading">
+            <div class="section-heading"><strong id="enemies-heading">已知敌人</strong><span id="enemy-count">0</span></div>
+            <ul id="enemy-list" class="resource-list enemy-list"></ul>
           </section>
           <section aria-labelledby="resources-heading">
             <div class="section-heading"><strong id="resources-heading">已知资源</strong><span id="resource-count">0</span></div>

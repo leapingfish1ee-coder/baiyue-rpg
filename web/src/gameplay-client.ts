@@ -5,7 +5,7 @@ import {
   isGameplayWorkerToMain,
   isMainToGameplayWorker,
   type GameplayCommand,
-  type GameplayReadModelV1,
+  type GameplayReadModelV2,
   type GameplayWorkerToMain,
   type MainToGameplayWorker,
 } from "./gameplay/contracts.ts";
@@ -130,7 +130,7 @@ export class GameplayTerrainBroker {
     try {
       this.sink.postMessage({
         type: "terrain-result",
-        protocolVersion: 1,
+        protocolVersion: GAMEPLAY_PROTOCOL_VERSION,
         terrainRequestId: pending.terrainRequestId,
         gameplayEpoch: pending.gameplayEpoch,
         chunkKey: pending.chunkKey,
@@ -162,7 +162,7 @@ export class GameplayTerrainBroker {
     try {
       this.sink.postMessage({
         type: "terrain-error",
-        protocolVersion: 1,
+        protocolVersion: GAMEPLAY_PROTOCOL_VERSION,
         terrainRequestId: pending.terrainRequestId,
         gameplayEpoch: pending.gameplayEpoch,
         code,
@@ -187,13 +187,13 @@ export class GameplayClient {
   private readonly chunks: ChunkManager;
   private readonly worker: Worker;
   private readonly pendingRequests = new Map<string, PendingRequest>();
-  private readonly listeners = new Set<(readModel: GameplayReadModelV1) => void>();
+  private readonly listeners = new Set<(readModel: GameplayReadModelV2) => void>();
   private readonly broker: GameplayTerrainBroker;
   private readonly nonce: string;
   private requestOrdinal = 0;
   private commandOrdinal = 0;
   private generatorVersion: number | null = null;
-  private latestReadModel: GameplayReadModelV1 | null = null;
+  private latestReadModel: GameplayReadModelV2 | null = null;
   private latestReadModelCanonical: string | null = null;
   private failed: Error | null = null;
 
@@ -231,10 +231,10 @@ export class GameplayClient {
     return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
   }
 
-  get readModel(): GameplayReadModelV1 | null { return this.latestReadModel; }
+  get readModel(): GameplayReadModelV2 | null { return this.latestReadModel; }
   get pendingRequestCount(): number { return this.pendingRequests.size; }
 
-  subscribe(listener: (readModel: GameplayReadModelV1) => void): () => void {
+  subscribe(listener: (readModel: GameplayReadModelV2) => void): () => void {
     this.listeners.add(listener);
     if (this.latestReadModel !== null) listener(this.latestReadModel);
     return () => this.listeners.delete(listener);
@@ -244,7 +244,7 @@ export class GameplayClient {
     const version = await this.chunks.whenReady();
     this.generatorVersion = version;
     const requestId = this.nextRequestId();
-    const result = await this.request({ type: "initialize", protocolVersion: 1, requestId, generatorVersion: version, wallClockMs });
+    const result = await this.request({ type: "initialize", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, generatorVersion: version, wallClockMs });
     if (result.type !== "request-result" || result.status !== "accepted") throw new Error("gameplay worker initialization was rejected");
   }
 
@@ -261,7 +261,7 @@ export class GameplayClient {
     const transfer = command.type === "ImportSave"
       ? [(fullCommand as Extract<GameplayCommand, { type: "ImportSave" }>).backupUtf8]
       : [];
-    const result = await this.request({ type: "command", protocolVersion: 1, requestId, command: fullCommand }, transfer);
+    const result = await this.request({ type: "command", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, command: fullCommand }, transfer);
     const expected = command.type === "ExportSave" ? "export-ready" : "command-result";
     if (result.type !== expected) throw new Error("gameplay worker returned the wrong terminal result");
     return result as T extends { type: "ExportSave" }
@@ -271,13 +271,13 @@ export class GameplayClient {
 
   async flush(wallClockMs = Date.now()): Promise<void> {
     const requestId = this.nextRequestId();
-    const result = await this.request({ type: "flush", protocolVersion: 1, requestId, wallClockMs });
+    const result = await this.request({ type: "flush", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, wallClockMs });
     if (result.type !== "request-result" || result.status !== "accepted") throw new Error("gameplay flush was rejected");
   }
 
   async shutdown(): Promise<void> {
     const requestId = this.nextRequestId();
-    const result = await this.request({ type: "shutdown", protocolVersion: 1, requestId });
+    const result = await this.request({ type: "shutdown", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId });
     if (result.type !== "request-result" || result.status !== "accepted") throw new Error("gameplay shutdown was rejected");
     this.failClient(new Error("gameplay client shut down"));
   }
@@ -380,4 +380,4 @@ export class GameplayClient {
   }
 }
 
-if (GAMEPLAY_PROTOCOL_VERSION !== 1) throw new Error("unsupported gameplay protocol version");
+if (GAMEPLAY_PROTOCOL_VERSION !== 2) throw new Error("unsupported gameplay protocol version");

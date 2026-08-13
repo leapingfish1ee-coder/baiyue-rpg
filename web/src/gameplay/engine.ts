@@ -1,12 +1,16 @@
 import { BASE_TERRAIN_ID, RUNTIME_CHUNK_SIZE, compareChunkKeysNumeric } from "../world-contract.ts";
 import { CampAnchorStepper } from "./anchor.ts";
 import {
+  ENEMY_DEFINITIONS,
+  EnemyGuaranteePlacementStepper,
   GuaranteePlacementStepper,
   RECIPE_DEFINITIONS,
   RECIPE_ORDER,
   RESOURCE_DEFINITIONS,
   RESOURCE_PROTOTYPE_ORDER,
   TOOL_DEFINITIONS,
+  WEAPON_DEFINITIONS,
+  ambientEnemyPlacementCandidate,
   ambientPlacementCandidates,
   authoritativeResourceDuration,
   authoritativeCraftingDuration,
@@ -16,6 +20,8 @@ import {
   resolveAmbientPlacementConflicts,
   taskKindMatchesPrototype,
   type ItemId,
+  type EnemyArchetypeId,
+  type EnemyPlacementDefinition,
   type MaterialItemId,
   type RecipeId,
   type ResourcePrototypeId,
@@ -25,8 +31,10 @@ import {
   type ToolSlot,
   type ResourcePlacementDefinition,
 } from "./content.ts";
-import type { ActivityReason, GameplayReadModelV1, OfflineReport, ResourceTask, SeedDecimal, TaskId, TaskIntent, WorldPoint } from "./contracts.ts";
+import type { ActivityReason, GameplayReadModelV2, HuntTask, OfflineReport, ResourceTask, SeedDecimal, TaskId, TaskIntent, WorldPoint } from "./contracts.ts";
+import { applyNaturalRegen, deterministicPpmRoll, deterministicRangeInclusive, finalPhysicalDamage, MICRO_HP_PER_HP, opposedChancePpm } from "./combat.ts";
 import { base64ToFogBits, fogBitsToBase64, isRevealed, revealObservation, revealedTiles, type FogMap } from "./fog.ts";
+import { sweptSegmentIntersectsCircle } from "./geometry.ts";
 import { floorDiv, levelFromTotalXp, observationRadius, xpAtLevelStart, xpForNextLevel } from "./math.ts";
 import { positionAtWeightedCost, rational, routeEventTimeMs } from "./motion.ts";
 import { PlannerStepper, TerrainSnapshot, type PlanFinal, type RoutePlan, type SegmentProfile } from "./navigation.ts";
@@ -38,6 +46,7 @@ export type EngineTaskInput = Readonly<
   | { kind: "Woodcut"; targetPrototypeId: "softwood_tree"; quantity: number | null }
   | { kind: "Mine"; targetPrototypeId: "surface_stone" | "shallow_copper_deposit"; quantity: number | null }
   | { kind: "Produce"; recipeId: RecipeId; requestedQuantity: number | null }
+  | { kind: "Hunt"; archetypeId: "graymane_boar"; requestedKills: number | null }
 >;
 
 export type EngineTerrainEffect = Readonly<{
@@ -60,20 +69,30 @@ export type EngineSnapshot = Readonly<{
   woodcuttingXp: number;
   miningXp: number;
   craftingXp: number;
+  meleeXp: number;
+  stealthXp: number;
   fiber: number;
   softwood: number;
   stone: number;
   copperOre: number;
   rope: number;
+  rawHide: number;
   reinforcedAxe: number;
   reinforcedPickaxe: number;
   equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   revealedTileCount: number;
   revealedChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string }>[];
   task: TaskIntent | null;
-  activityState: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
+  activityState: "idle" | "planning" | "moving" | "acting" | "combat" | "respawning" | "waiting" | "paused";
   route: readonly WorldPoint[];
   routeIndex: number;
+  playerHpMicro: bigint;
+  combat: RuntimeCombatState | null;
+  respawn: RuntimeRespawnState | null;
+  targetKills: number;
+  otherKills: number;
+  deaths: number;
+  respawns: number;
 }>;
 
 export type EnginePersistedState = Readonly<{
@@ -86,11 +105,14 @@ export type EnginePersistedState = Readonly<{
   woodcuttingXp: number;
   miningXp: number;
   craftingXp: number;
+  meleeXp: number;
+  stealthXp: number;
   fiber: number;
   softwood: number;
   stone: number;
   copperOre: number;
   rope: number;
+  rawHide: number;
   wornAxe: number;
   wornPickaxe: number;
   reinforcedAxe: number;
@@ -98,7 +120,7 @@ export type EnginePersistedState = Readonly<{
   equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: TaskIntent | null;
   execution: Readonly<{
-    state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
+    state: "idle" | "planning" | "moving" | "acting" | "combat" | "respawning" | "waiting" | "paused";
     routePurpose: "explore" | "task_target" | "auto_explore" | null;
     route: readonly WorldPoint[];
     routeIndex: number;
@@ -139,7 +161,18 @@ export type EnginePersistedState = Readonly<{
     chunkKey: string;
     revealedBase64: string;
     knownPlacements: readonly KnownResourcePlacement[];
+    knownEnemyPlacements: readonly KnownEnemyPlacement[];
   }>[];
+  playerHpMicro: string;
+  playerMaxHpMicro: string;
+  hpRegenNumerator: string;
+  combat: PersistedCombatState | null;
+  respawn: PersistedRespawnState | null;
+  revivalGraceUntilWorldTimeMs: string | null;
+  targetKills: number;
+  otherKills: number;
+  deaths: number;
+  respawns: number;
   nextEventOrdinal: string;
 }>;
 
@@ -153,18 +186,21 @@ export type EngineRestoreState = Readonly<{
   woodcuttingXp: number;
   miningXp: number;
   craftingXp: number;
+  meleeXp: number;
+  stealthXp: number;
   fiber: number;
   softwood: number;
   stone: number;
   copperOre: number;
   rope: number;
+  rawHide: number;
   wornAxe: number;
   wornPickaxe: number;
   reinforcedAxe: number;
   reinforcedPickaxe: number;
   equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: TaskIntent | null;
-  executionState: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
+  executionState: "idle" | "planning" | "moving" | "acting" | "combat" | "respawning" | "waiting" | "paused";
   routePurpose: "explore" | "task_target" | "auto_explore" | null;
   targetPlacementId: string | null;
   action: Readonly<{
@@ -189,14 +225,24 @@ export type EngineRestoreState = Readonly<{
     totalSpeedBps: number;
   }> | null;
   waitingReason: ActivityReason | null;
-  worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>[];
+  worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[]; knownEnemyPlacements: readonly KnownEnemyPlacement[] }>[];
+  playerHpMicro: string;
+  playerMaxHpMicro: string;
+  hpRegenNumerator: string;
+  combat: PersistedCombatState | null;
+  respawn: PersistedRespawnState | null;
+  revivalGraceUntilWorldTimeMs: string | null;
+  targetKills: number;
+  otherKills: number;
+  deaths: number;
+  respawns: number;
   nextEventOrdinal: string;
 }>;
 
 export type EngineReadModelOptions = Readonly<{
-  saveState?: GameplayReadModelV1["save"];
+  saveState?: GameplayReadModelV2["save"];
   offlineReport?: OfflineReport | null;
-  startup?: GameplayReadModelV1["startup"];
+  startup?: GameplayReadModelV2["startup"];
 }>;
 
 type PendingTerrain = Readonly<{ source: "anchor" | "navigation" | "content"; effect: EngineTerrainEffect }>;
@@ -213,6 +259,118 @@ export type KnownResourcePlacement = Readonly<{
   depletedWorldTimeMs: string | null;
   nextAvailableWorldTimeMs: string | null;
 }>;
+
+export type KnownEnemyPlacement = Readonly<{
+  placementId: string;
+  archetypeId: EnemyArchetypeId;
+  source: "ambient" | "guarantee";
+  tileX: string;
+  tileY: string;
+  point: WorldPoint;
+  availability: "active" | "dead";
+  spawnCycle: number;
+  deadWorldTimeMs: string | null;
+  nextAvailableWorldTimeMs: string | null;
+  encounterChecked: boolean;
+  pendingStealthPass: boolean;
+  stealthSettled: boolean;
+}>;
+
+type PersistedRational = Readonly<{ numerator: string; denominator: string }>;
+
+type PersistedSegmentProfile = Readonly<{
+  start: WorldPoint;
+  end: WorldPoint;
+  runs: readonly Readonly<{
+    startParameter: PersistedRational;
+    endParameter: PersistedRational;
+    terrainFactor: string;
+    cost: string;
+    cumulativeCostBefore: string;
+  }>[];
+  boundaryParameters: readonly PersistedRational[];
+  cost: string;
+}>;
+
+type PersistedPausedMovement = Readonly<{
+  route: readonly WorldPoint[];
+  legProfiles: readonly PersistedSegmentProfile[];
+  routeIndex: number;
+  elapsedRouteMs: string;
+  boundaryIndex: number;
+}>;
+
+export type PersistedPausedExecution = Readonly<{
+  taskId: string;
+  targetPlacementId: string | null;
+  routePurpose: "explore" | "task_target" | "auto_explore" | null;
+  movement: PersistedPausedMovement | null;
+  action: Readonly<{
+    kind: "Resource";
+    actionId: string;
+    placementId: string;
+    prototypeId: ResourcePrototypeId;
+    remainingMs: string;
+    durationMs: string;
+    skillSpeedBps: number;
+    toolSpeedBps: number;
+    totalSpeedBps: number;
+  } | {
+    kind: "Produce";
+    actionId: string;
+    recipeId: RecipeId;
+    remainingMs: string;
+    durationMs: string;
+    skillSpeedBps: number;
+    totalSpeedBps: number;
+  }> | null;
+}>;
+
+export type PersistedCombatState = Readonly<{
+  combatId: string;
+  encounterInstanceId: string;
+  placementId: string;
+  archetypeId: EnemyArchetypeId;
+  triggeredByHunt: boolean;
+  playerAccuracy: number;
+  playerEvasion: number;
+  playerArmor: number;
+  playerDamageMin: number;
+  playerDamageMax: number;
+  playerAttackIntervalMs: string;
+  enemyAccuracy: number;
+  enemyEvasion: number;
+  enemyArmor: number;
+  enemyDamageMin: number;
+  enemyDamageMax: number;
+  enemyAttackIntervalMs: string;
+  enemyHpMicro: string;
+  playerNextAttackWorldTimeMs: string;
+  enemyNextAttackWorldTimeMs: string;
+  eventOrdinal: string;
+  lastAttack: Readonly<{ actor: "player" | "enemy"; hit: boolean; damage: number }> | null;
+  paused: PersistedPausedExecution | null;
+}>;
+
+export type PersistedRespawnState = Readonly<{
+  deathPosition: WorldPoint;
+  deadlineWorldTimeMs: string;
+}>;
+
+type Mutable<T> = { -readonly [Key in keyof T]: T[Key] };
+
+type RuntimeCombatState = Omit<Mutable<PersistedCombatState>,
+  "playerAttackIntervalMs" | "enemyAttackIntervalMs" | "enemyHpMicro" | "playerNextAttackWorldTimeMs" | "enemyNextAttackWorldTimeMs" | "eventOrdinal"
+> & {
+  playerAttackIntervalMs: bigint;
+  enemyAttackIntervalMs: bigint;
+  enemyHpMicro: bigint;
+  playerNextAttackWorldTimeMs: bigint;
+  enemyNextAttackWorldTimeMs: bigint;
+  eventOrdinal: bigint;
+};
+
+type RuntimeRespawnState = Readonly<{ deathPosition: WorldPoint; deadlineWorldTimeMs: bigint }>;
 
 type ResourceAction = {
   kind: "Resource";
@@ -245,6 +403,13 @@ type ResourcePlanning = {
   index: number;
   planner: PlannerStepper | null;
   best: Readonly<{ placement: KnownResourcePlacement; plan: RoutePlan }> | null;
+};
+
+type EnemyPlanning = {
+  candidates: readonly KnownEnemyPlacement[];
+  index: number;
+  planner: PlannerStepper | null;
+  best: Readonly<{ placement: KnownEnemyPlacement; plan: RoutePlan }> | null;
 };
 
 type MotionLeg = {
@@ -337,6 +502,10 @@ export class InvalidEquipmentError extends Error {
   readonly code = "command/invalid_equipment" as const;
 }
 
+export class CombatLockedError extends Error {
+  readonly code = "command/combat_locked" as const;
+}
+
 export class QuantityOverflowError extends Error {
   readonly code = "integrity/quantity_overflow" as const;
 }
@@ -347,12 +516,56 @@ function taskIdFromCommandId(commandId: string): TaskId {
 }
 
 function clonePoint(point: WorldPoint): WorldPoint { return { x: point.x, y: point.y }; }
+
+function serializeRational(value: Readonly<{ numerator: bigint; denominator: bigint }>): PersistedRational {
+  return { numerator: value.numerator.toString(), denominator: value.denominator.toString() };
+}
+
+function restoreRational(value: PersistedRational): Readonly<{ numerator: bigint; denominator: bigint }> {
+  return { numerator: BigInt(value.numerator), denominator: BigInt(value.denominator) };
+}
+
+function serializeSegmentProfile(profile: SegmentProfile): PersistedSegmentProfile {
+  return {
+    start: clonePoint(profile.start),
+    end: clonePoint(profile.end),
+    runs: profile.runs.map((run) => ({
+      startParameter: serializeRational(run.startParameter),
+      endParameter: serializeRational(run.endParameter),
+      terrainFactor: run.terrainFactor.toString(),
+      cost: run.cost.toString(),
+      cumulativeCostBefore: run.cumulativeCostBefore.toString(),
+    })),
+    boundaryParameters: profile.boundaryParameters.map(serializeRational),
+    cost: profile.cost.toString(),
+  };
+}
+
+function restoreSegmentProfile(profile: PersistedSegmentProfile): SegmentProfile {
+  return {
+    start: clonePoint(profile.start),
+    end: clonePoint(profile.end),
+    runs: profile.runs.map((run) => ({
+      startParameter: restoreRational(run.startParameter),
+      endParameter: restoreRational(run.endParameter),
+      terrainFactor: BigInt(run.terrainFactor),
+      cost: BigInt(run.cost),
+      cumulativeCostBefore: BigInt(run.cumulativeCostBefore),
+    })),
+    boundaryParameters: profile.boundaryParameters.map(restoreRational),
+    cost: BigInt(profile.cost),
+  };
+}
 function isResourceTask(task: TaskIntent | null): task is ResourceTask {
   return task !== null && (task.kind === "Gather" || task.kind === "Woodcut" || task.kind === "Mine");
 }
 
 function isProduceTask(task: TaskIntent | null): task is Extract<TaskIntent, { kind: "Produce" }> {
   return task?.kind === "Produce";
+}
+
+function isHuntTask(task: TaskIntent | null): task is HuntTask {
+  return task?.kind === "Hunt";
 }
 
 export class GameplayEngine {
@@ -368,11 +581,14 @@ export class GameplayEngine {
   private woodcuttingXp = 0;
   private miningXp = 0;
   private craftingXp = 0;
+  private meleeXp = 0;
+  private stealthXp = 0;
   private fiber = 0;
   private softwood = 0;
   private stone = 0;
   private copperOre = 0;
   private rope = 0;
+  private rawHide = 0;
   private wornAxe = 0;
   private wornPickaxe = 0;
   private reinforcedAxe = 0;
@@ -380,7 +596,7 @@ export class GameplayEngine {
   private equipment: Record<ToolSlot, ToolItemId | null> = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
   private revealedTileCount = 0;
   private task: TaskIntent | null = null;
-  private activityState: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused" = "idle";
+  private activityState: "idle" | "planning" | "moving" | "acting" | "combat" | "respawning" | "waiting" | "paused" = "idle";
   private routePurpose: "explore" | "task_target" | "auto_explore" | null = null;
   private route: readonly WorldPoint[] = [];
   private legCosts: readonly bigint[] = [];
@@ -396,19 +612,33 @@ export class GameplayEngine {
   private plannerGeneration = 0;
   private planner: PlannerStepper | null = null;
   private resourcePlanning: ResourcePlanning | null = null;
+  private enemyPlanning: EnemyPlanning | null = null;
   private anchor: CampAnchorStepper | null = null;
   private guaranteeStepper: GuaranteePlacementStepper | null = null;
+  private enemyGuaranteeStepper: EnemyGuaranteePlacementStepper | null = null;
   private guaranteePlacements: readonly ResourcePlacementDefinition[] = [];
+  private enemyGuaranteePlacements: readonly EnemyPlacementDefinition[] = [];
   private readonly knownPlacements = new Map<string, KnownResourcePlacement>();
+  private readonly knownEnemyPlacements = new Map<string, KnownEnemyPlacement>();
   private readonly unreachablePlacementIds = new Set<string>();
   private readonly pendingContentCells = new Set<string>();
   private activeContentCell: string | null = null;
   private currentTargetPlacementId: string | null = null;
   private action: NonCombatAction | null = null;
+  private playerHpMicro = 100n * MICRO_HP_PER_HP;
+  private playerMaxHpMicro = 100n * MICRO_HP_PER_HP;
+  private hpRegenNumerator = 0n;
+  private combat: RuntimeCombatState | null = null;
+  private respawn: RuntimeRespawnState | null = null;
+  private revivalGraceUntilWorldTimeMs: bigint | null = null;
+  private targetKills = 0;
+  private otherKills = 0;
+  private deaths = 0;
+  private respawns = 0;
   private nextEventOrdinal = 0n;
   private immediateCommitPending = false;
   private pendingTerrain: PendingTerrain | null = null;
-  private startup: GameplayReadModelV1["startup"] = "new_world";
+  private startup: GameplayReadModelV2["startup"] = "new_world";
 
   constructor(generatorVersion: number) { this.generatorVersion = generatorVersion; }
 
@@ -416,7 +646,7 @@ export class GameplayEngine {
   get revision(): number { return this.readModelRevision; }
   get worldSeed(): SeedDecimal | null { return this.seed; }
   get hasPendingWork(): boolean {
-    return this.pendingTerrain !== null || this.anchor !== null || this.guaranteeStepper !== null
+    return this.pendingTerrain !== null || this.anchor !== null || this.guaranteeStepper !== null || this.enemyGuaranteeStepper !== null
       || this.pendingContentCells.size > 0 || this.activityState === "planning";
   }
   get needsImmediateCommit(): boolean { return this.immediateCommitPending; }
@@ -435,11 +665,14 @@ export class GameplayEngine {
       woodcuttingXp: this.woodcuttingXp,
       miningXp: this.miningXp,
       craftingXp: this.craftingXp,
+      meleeXp: this.meleeXp,
+      stealthXp: this.stealthXp,
       fiber: this.fiber,
       softwood: this.softwood,
       stone: this.stone,
       copperOre: this.copperOre,
       rope: this.rope,
+      rawHide: this.rawHide,
       reinforcedAxe: this.reinforcedAxe,
       reinforcedPickaxe: this.reinforcedPickaxe,
       equipment: { ...this.equipment },
@@ -451,6 +684,13 @@ export class GameplayEngine {
       activityState: this.activityState,
       route: this.route.map(clonePoint),
       routeIndex: this.routeIndex,
+      playerHpMicro: this.playerHpMicro,
+      combat: this.combat === null ? null : structuredClone(this.combat),
+      respawn: this.respawn === null ? null : structuredClone(this.respawn),
+      targetKills: this.targetKills,
+      otherKills: this.otherKills,
+      deaths: this.deaths,
+      respawns: this.respawns,
     };
   }
 
@@ -467,11 +707,14 @@ export class GameplayEngine {
       woodcuttingXp: this.woodcuttingXp,
       miningXp: this.miningXp,
       craftingXp: this.craftingXp,
+      meleeXp: this.meleeXp,
+      stealthXp: this.stealthXp,
       fiber: this.fiber,
       softwood: this.softwood,
       stone: this.stone,
       copperOre: this.copperOre,
       rope: this.rope,
+      rawHide: this.rawHide,
       wornAxe: this.wornAxe,
       wornPickaxe: this.wornPickaxe,
       reinforcedAxe: this.reinforcedAxe,
@@ -518,6 +761,19 @@ export class GameplayEngine {
         waitingReason: this.reason,
       },
       worldChunks: this.persistedWorldChunks(),
+      playerHpMicro: this.playerHpMicro.toString(),
+      playerMaxHpMicro: this.playerMaxHpMicro.toString(),
+      hpRegenNumerator: this.hpRegenNumerator.toString(),
+      combat: this.persistedCombatState(),
+      respawn: this.respawn === null ? null : {
+        deathPosition: clonePoint(this.respawn.deathPosition),
+        deadlineWorldTimeMs: this.respawn.deadlineWorldTimeMs.toString(),
+      },
+      revivalGraceUntilWorldTimeMs: this.revivalGraceUntilWorldTimeMs?.toString() ?? null,
+      targetKills: this.targetKills,
+      otherKills: this.otherKills,
+      deaths: this.deaths,
+      respawns: this.respawns,
       nextEventOrdinal: this.nextEventOrdinal.toString(),
     };
   }
@@ -534,11 +790,14 @@ export class GameplayEngine {
     this.woodcuttingXp = state.woodcuttingXp;
     this.miningXp = state.miningXp;
     this.craftingXp = state.craftingXp;
+    this.meleeXp = state.meleeXp;
+    this.stealthXp = state.stealthXp;
     this.fiber = state.fiber;
     this.softwood = state.softwood;
     this.stone = state.stone;
     this.copperOre = state.copperOre;
     this.rope = state.rope;
+    this.rawHide = state.rawHide;
     this.wornAxe = state.wornAxe;
     this.wornPickaxe = state.wornPickaxe;
     this.reinforcedAxe = state.reinforcedAxe;
@@ -550,11 +809,26 @@ export class GameplayEngine {
     this.terrain.clear();
     this.fog.clear();
     this.knownPlacements.clear();
+    this.knownEnemyPlacements.clear();
     this.unreachablePlacementIds.clear();
     for (const chunk of state.worldChunks) {
       this.fog.set(chunk.chunkKey, base64ToFogBits(chunk.revealedBase64));
       for (const placement of chunk.knownPlacements) this.knownPlacements.set(placement.placementId, structuredClone(placement));
+      for (const placement of chunk.knownEnemyPlacements) this.knownEnemyPlacements.set(placement.placementId, structuredClone(placement));
     }
+    this.playerHpMicro = BigInt(state.playerHpMicro);
+    this.playerMaxHpMicro = BigInt(state.playerMaxHpMicro);
+    this.hpRegenNumerator = BigInt(state.hpRegenNumerator);
+    this.combat = state.combat === null ? null : this.restoreCombatState(state.combat);
+    this.respawn = state.respawn === null ? null : {
+      deathPosition: clonePoint(state.respawn.deathPosition),
+      deadlineWorldTimeMs: BigInt(state.respawn.deadlineWorldTimeMs),
+    };
+    this.revivalGraceUntilWorldTimeMs = state.revivalGraceUntilWorldTimeMs === null ? null : BigInt(state.revivalGraceUntilWorldTimeMs);
+    this.targetKills = state.targetKills;
+    this.otherKills = state.otherKills;
+    this.deaths = state.deaths;
+    this.respawns = state.respawns;
     this.nextEventOrdinal = BigInt(state.nextEventOrdinal);
     this.revealedTileCount = 0;
     for (const bits of this.fog.values()) {
@@ -588,7 +862,11 @@ export class GameplayEngine {
       totalSpeedBps: state.action.totalSpeedBps,
     };
     this.reason = null;
-    if (this.task === null) {
+    if (this.combat !== null) {
+      this.activityState = "combat";
+    } else if (this.respawn !== null) {
+      this.activityState = "respawning";
+    } else if (this.task === null) {
       this.activityState = "idle";
     } else if (state.executionState === "acting" && this.action !== null) {
       this.activityState = "acting";
@@ -601,7 +879,9 @@ export class GameplayEngine {
       this.beginPlanning();
     }
     this.guaranteeStepper = new GuaranteePlacementStepper(this.seed, this.campAnchor, this.terrain);
+    this.enemyGuaranteeStepper = null;
     this.guaranteePlacements = [];
+    this.enemyGuaranteePlacements = [];
     this.pendingContentCells.clear();
     this.queueAllRevealedContentCells();
     this.immediateCommitPending = false;
@@ -625,11 +905,14 @@ export class GameplayEngine {
     this.woodcuttingXp = 0;
     this.miningXp = 0;
     this.craftingXp = 0;
+    this.meleeXp = 0;
+    this.stealthXp = 0;
     this.fiber = 0;
     this.softwood = 0;
     this.stone = 0;
     this.copperOre = 0;
     this.rope = 0;
+    this.rawHide = 0;
     this.wornAxe = 0;
     this.wornPickaxe = 0;
     this.reinforcedAxe = 0;
@@ -637,13 +920,16 @@ export class GameplayEngine {
     this.equipment = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
     this.task = null;
     this.knownPlacements.clear();
+    this.knownEnemyPlacements.clear();
     this.unreachablePlacementIds.clear();
     this.guaranteePlacements = [];
     this.guaranteeStepper = null;
+    this.enemyGuaranteeStepper = null;
     this.pendingContentCells.clear();
     this.activeContentCell = null;
     this.currentTargetPlacementId = null;
     this.action = null;
+    this.resetCombatProgress();
     this.nextEventOrdinal = 0n;
     this.immediateCommitPending = false;
     this.clearRoute();
@@ -665,11 +951,14 @@ export class GameplayEngine {
     this.woodcuttingXp = 0;
     this.miningXp = 0;
     this.craftingXp = 0;
+    this.meleeXp = 0;
+    this.stealthXp = 0;
     this.fiber = 0;
     this.softwood = 0;
     this.stone = 0;
     this.copperOre = 0;
     this.rope = 0;
+    this.rawHide = 0;
     this.wornAxe = 0;
     this.wornPickaxe = 0;
     this.reinforcedAxe = 0;
@@ -679,16 +968,19 @@ export class GameplayEngine {
     this.task = null;
     this.anchor = null;
     this.guaranteeStepper = null;
+    this.enemyGuaranteeStepper = null;
     this.guaranteePlacements = [];
     this.planner = null;
     this.pendingTerrain = null;
     this.terrain.clear();
     this.fog.clear();
     this.knownPlacements.clear();
+    this.knownEnemyPlacements.clear();
     this.pendingContentCells.clear();
     this.activeContentCell = null;
     this.currentTargetPlacementId = null;
     this.action = null;
+    this.resetCombatProgress();
     this.nextEventOrdinal = 0n;
     this.immediateCommitPending = false;
     this.clearRoute();
@@ -718,6 +1010,8 @@ export class GameplayEngine {
       if (actualLevel < definition.requiredLevel) {
         throw new RecipeLevelTooLowError(definition.recipeId, definition.requiredLevel, actualLevel);
       }
+    } else if (taskInput.kind === "Hunt" && !this.hasKnownEnemyArchetype(taskInput.archetypeId)) {
+      throw new UnknownTargetPrototypeError(`${taskInput.archetypeId} is not known in this world`);
     }
     this.plannerGeneration += 1;
     this.materializeCurrentPosition();
@@ -735,12 +1029,32 @@ export class GameplayEngine {
         requestedQuantity: taskInput.requestedQuantity, completedQuantity: 0,
         createdWorldTimeMs: this.worldTimeMs.toString(),
       };
+    } else if (taskInput.kind === "Hunt") {
+      this.task = {
+        taskId: taskIdFromCommandId(commandId), kind: "Hunt", archetypeId: taskInput.archetypeId,
+        requestedKills: taskInput.requestedKills, completedKills: 0,
+        createdWorldTimeMs: this.worldTimeMs.toString(),
+      };
     } else {
       this.task = {
         taskId: taskIdFromCommandId(commandId), kind: "Explore", mode: taskInput.mode,
         destination: taskInput.destination === null ? null : clonePoint(taskInput.destination),
         createdWorldTimeMs: this.worldTimeMs.toString(),
       };
+    }
+    this.invalidatePendingStealthPasses();
+    if (this.combat !== null) {
+      this.combat = { ...this.combat, paused: null };
+      this.activityState = "combat";
+      this.reason = null;
+      this.bumpRevision();
+      return;
+    }
+    if (this.respawn !== null) {
+      this.activityState = "respawning";
+      this.reason = null;
+      this.bumpRevision();
+      return;
     }
     this.pendingTerrain = null;
     this.action = null;
@@ -752,6 +1066,7 @@ export class GameplayEngine {
 
   equipItem(itemId: ToolItemId): void {
     this.requireWorld();
+    if (this.combat !== null) throw new CombatLockedError();
     const tool = TOOL_DEFINITIONS[itemId];
     if (this.equipment[tool.slot] === itemId) return;
     const actualLevel = levelFromTotalXp(this.skillXpFor(tool.requiredSkill));
@@ -773,6 +1088,7 @@ export class GameplayEngine {
 
   unequipSlot(slot: ToolSlot): void {
     this.requireWorld();
+    if (this.combat !== null) throw new CombatLockedError();
     const itemId = this.equipment[slot];
     if (itemId === null) return;
     const nextQuantity = this.toolInventoryQuantity(itemId) + 1;
@@ -786,6 +1102,22 @@ export class GameplayEngine {
     this.requireWorld();
     this.plannerGeneration += 1;
     this.materializeCurrentPosition();
+    this.invalidatePendingStealthPasses();
+    if (this.combat !== null) {
+      this.combat = { ...this.combat, paused: null };
+      this.task = null;
+      this.activityState = "combat";
+      this.reason = null;
+      this.bumpRevision();
+      return;
+    }
+    if (this.respawn !== null) {
+      this.task = null;
+      this.activityState = "respawning";
+      this.reason = null;
+      this.bumpRevision();
+      return;
+    }
     this.pendingTerrain = null;
     this.action = null;
     this.currentTargetPlacementId = null;
@@ -822,16 +1154,20 @@ export class GameplayEngine {
       this.woodcuttingXp = 0;
       this.miningXp = 0;
       this.craftingXp = 0;
+      this.meleeXp = 0;
+      this.stealthXp = 0;
       this.fiber = 0;
       this.softwood = 0;
       this.stone = 0;
       this.copperOre = 0;
       this.rope = 0;
+      this.rawHide = 0;
       this.wornAxe = 0;
       this.wornPickaxe = 0;
       this.reinforcedAxe = 0;
       this.reinforcedPickaxe = 0;
       this.equipment = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
+      this.resetCombatProgress();
       this.revealedTileCount = 0;
       this.task = null;
       this.activityState = "idle";
@@ -849,6 +1185,22 @@ export class GameplayEngine {
       this.guaranteeStepper = null;
       this.guaranteePlacements = result.placements.map((placement) => structuredClone(placement));
       for (const placement of this.guaranteePlacements) this.discoverPlacementIfRevealed(placement);
+      this.enemyGuaranteeStepper = new EnemyGuaranteePlacementStepper(
+        this.seed!,
+        this.campAnchor!,
+        this.terrain,
+        new Set(this.guaranteePlacements.map((placement) => `${placement.tileX},${placement.tileY}`)),
+      );
+      this.bumpRevision();
+      return { kind: "yield" };
+    }
+    if (this.enemyGuaranteeStepper !== null) {
+      const result = this.enemyGuaranteeStepper.step(maxOperations);
+      if (result.kind === "terrain-required") return this.setTerrainEffect("content", result.chunkX, result.chunkY, result.chunkKey);
+      if (result.kind === "yield") return result;
+      this.enemyGuaranteeStepper = null;
+      this.enemyGuaranteePlacements = result.placements.map((placement) => structuredClone(placement));
+      for (const placement of this.enemyGuaranteePlacements) this.discoverEnemyIfRevealed(placement);
       this.startup = "ready";
       this.bumpRevision();
       return this.pendingContentCells.size > 0 ? { kind: "yield" } : { kind: "settled" };
@@ -861,6 +1213,7 @@ export class GameplayEngine {
     }
     if (this.activityState !== "planning") return { kind: "settled" };
     if (this.resourcePlanning !== null) return this.stepResourcePlanning(maxOperations);
+    if (this.enemyPlanning !== null) return this.stepEnemyPlanning(maxOperations);
     if (this.planner === null) return { kind: "settled" };
     const result = this.planner.step(maxOperations);
     if (result.kind === "terrain-required") return this.setTerrainEffect("navigation", result.chunkX, result.chunkY, result.chunkKey);
@@ -891,44 +1244,59 @@ export class GameplayEngine {
       const nextBoundaryTime = motion?.boundaryWorldTimes[motion.boundaryIndex] ?? null;
       const nextMotionTime = motion === null ? null : nextBoundaryTime !== null && nextBoundaryTime < motion.endWorldTimeMs
         ? nextBoundaryTime : motion.endWorldTimeMs;
-      const nextActionTime = this.action?.endWorldTimeMs ?? null;
+      const nextThreatTime = motion === null || this.combat !== null || this.respawn !== null ? null : this.nextMotionThreatWorldTime(motion);
+      const nextActionTime = this.combat === null && this.respawn === null ? this.action?.endWorldTimeMs ?? null : null;
       const nextRespawnTime = this.nextRespawnWorldTime();
+      const nextPlayerRespawnTime = this.respawn?.deadlineWorldTimeMs ?? null;
+      const nextCombatAttackTime = this.combat === null ? null
+        : this.combat.playerNextAttackWorldTimeMs < this.combat.enemyNextAttackWorldTimeMs
+          ? this.combat.playerNextAttackWorldTimeMs : this.combat.enemyNextAttackWorldTimeMs;
+      const nextGraceExpiry = this.revivalGraceUntilWorldTimeMs !== null && this.revivalGraceUntilWorldTimeMs > this.worldTimeMs
+        ? this.revivalGraceUntilWorldTimeMs : null;
       let nextEventTime: bigint | null = null;
-      for (const candidate of [nextRespawnTime, nextActionTime, nextMotionTime]) {
+      for (const candidate of [nextGraceExpiry, nextPlayerRespawnTime, nextRespawnTime, nextCombatAttackTime, nextActionTime, nextThreatTime, nextMotionTime]) {
         if (candidate !== null && (nextEventTime === null || candidate < nextEventTime)) nextEventTime = candidate;
       }
       if (nextEventTime === null) {
         if (this.worldTimeMs >= target) return 0n;
-        this.worldTimeMs = target;
+        this.advanceWorldTimeTo(target);
         this.bumpRevision();
         return 0n;
       }
       if (target < nextEventTime) {
-        this.worldTimeMs = target;
+        this.advanceWorldTimeTo(target);
         if (motion !== null) this.position = this.positionForMotion(motion, target);
         this.bumpRevision();
         return 0n;
       }
-      this.worldTimeMs = nextEventTime;
+      this.advanceWorldTimeTo(nextEventTime);
       if (motion !== null) this.position = this.positionForMotion(motion, nextEventTime);
 
+      if (nextGraceExpiry === nextEventTime) {
+        this.revivalGraceUntilWorldTimeMs = null;
+      }
+      if (nextPlayerRespawnTime === nextEventTime && this.respawn !== null) {
+        this.completePlayerRespawn();
+      }
       if (nextRespawnTime === nextEventTime) {
         this.processRespawnsAt(nextEventTime);
-        if (motion !== null && this.motion !== motion) {
-          this.bumpRevision();
-          return target - this.worldTimeMs;
-        }
       }
-      if (nextActionTime === nextEventTime && this.action !== null) {
+      if (this.combat === null && this.respawn === null && (nextGraceExpiry === nextEventTime || nextRespawnTime === nextEventTime)) {
+        this.evaluateEncountersAtCurrent();
+      }
+      if (nextCombatAttackTime === nextEventTime && this.combat !== null) {
+        this.processCombatAttacksAt(nextEventTime);
+      }
+      if (this.combat === null && this.respawn === null && nextActionTime === nextEventTime && this.action !== null) {
         if (this.action.kind === "Resource") this.completeResourceAction();
         else this.completeProductionAction();
         this.bumpRevision();
         return target - this.worldTimeMs;
       }
 
-      if (nextMotionTime !== nextEventTime || motion === null) {
+      if (motion === null || this.motion !== motion || this.combat !== null || this.respawn !== null) {
         this.bumpRevision();
-        if (this.hasPendingWork) return target - this.worldTimeMs;
+        if (this.hasPendingWork || this.immediateCommitPending) return target - this.worldTimeMs;
         continue;
       }
       let observed = false;
@@ -938,6 +1306,13 @@ export class GameplayEngine {
         this.revealAtCurrent(true);
         observed = true;
         if (this.motion !== motion) {
+          this.bumpRevision();
+          return target - this.worldTimeMs;
+        }
+      }
+      if (nextThreatTime === nextEventTime || nextBoundaryTime === nextEventTime || nextMotionTime === nextEventTime) {
+        this.processMotionThreatsAt(motion, nextEventTime);
+        if (this.combat !== null || this.immediateCommitPending || this.motion !== motion) {
           this.bumpRevision();
           return target - this.worldTimeMs;
         }
@@ -956,11 +1331,11 @@ export class GameplayEngine {
         else this.finishRoute();
       }
       this.bumpRevision();
-      if (this.hasPendingWork) return target - this.worldTimeMs;
+      if (this.hasPendingWork || this.immediateCommitPending) return target - this.worldTimeMs;
     }
   }
 
-  toReadModel(saveRevision = 0, committedWallClockMs: number | null = null, options: EngineReadModelOptions = {}): GameplayReadModelV1 {
+  toReadModel(saveRevision = 0, committedWallClockMs: number | null = null, options: EngineReadModelOptions = {}): GameplayReadModelV2 {
     const level = levelFromTotalXp(this.totalXp);
     const levelStart = xpAtLevelStart(level);
     const gatheringLevel = levelFromTotalXp(this.gatheringXp);
@@ -971,18 +1346,29 @@ export class GameplayEngine {
     const miningLevelStart = xpAtLevelStart(miningLevel);
     const craftingLevel = levelFromTotalXp(this.craftingXp);
     const craftingLevelStart = xpAtLevelStart(craftingLevel);
+    const meleeLevel = levelFromTotalXp(this.meleeXp);
+    const meleeLevelStart = xpAtLevelStart(meleeLevel);
+    const stealthLevel = levelFromTotalXp(this.stealthXp);
+    const stealthLevelStart = xpAtLevelStart(stealthLevel);
     const gatheringSpeed = authoritativeResourceDuration("wild_fiber", gatheringLevel).skillSpeedBps;
     const woodcuttingSpeed = authoritativeResourceDuration("softwood_tree", woodcuttingLevel).skillSpeedBps;
     const miningSpeed = authoritativeResourceDuration("surface_stone", miningLevel).skillSpeedBps;
     const remainingEtaMs = this.remainingRouteEtaMs();
     const action = this.action;
     return {
-      protocolVersion: 1,
+      protocolVersion: 2,
       readModelRevision: this.readModelRevision,
       gameplayEpoch: this.gameplayEpoch,
       startup: options.startup ?? this.startup,
       generatorVersion: this.generatorVersion,
-      player: this.position === null ? null : { position: clonePoint(this.position), hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2c" },
+      player: this.position === null ? null : {
+        position: clonePoint(this.position),
+        hp: { currentMicro: this.playerHpMicro.toString(), maxMicro: this.playerMaxHpMicro.toString() },
+        state: this.respawn !== null ? "dead" : this.combat !== null ? "combat" : "alive",
+        naturalRegen: "1% max HP / 10s",
+        revivalGraceRemainingMs: this.revivalGraceUntilWorldTimeMs === null ? null
+          : (this.revivalGraceUntilWorldTimeMs > this.worldTimeMs ? this.revivalGraceUntilWorldTimeMs - this.worldTimeMs : 0n).toString(),
+      },
       task: this.task,
       activity: {
         state: this.activityState,
@@ -1049,6 +1435,20 @@ export class GameplayEngine {
           nextLevelXp: xpForNextLevel(craftingLevel),
           skillSpeedBps: Math.min(Math.max(craftingLevel - 1, 0) * 50, 2_500),
         },
+        melee: {
+          level: meleeLevel,
+          totalXp: this.meleeXp,
+          currentLevelXp: this.meleeXp - meleeLevelStart,
+          nextLevelXp: xpForNextLevel(meleeLevel),
+          skillSpeedBps: 0,
+        },
+        stealth: {
+          level: stealthLevel,
+          totalXp: this.stealthXp,
+          currentLevelXp: this.stealthXp - stealthLevelStart,
+          nextLevelXp: xpForNextLevel(stealthLevel),
+          skillSpeedBps: 0,
+        },
       },
       inventory: this.position === null ? null : {
         items: [
@@ -1057,6 +1457,7 @@ export class GameplayEngine {
           ...(this.stone === 0 ? [] : [{ itemId: "stone", displayName: "石料", category: "material", quantity: this.stone }] as const),
           ...(this.copperOre === 0 ? [] : [{ itemId: "copper_ore", displayName: "铜矿石", category: "material", quantity: this.copperOre }] as const),
           ...(this.rope === 0 ? [] : [{ itemId: "rope", displayName: "绳索", category: "material", quantity: this.rope }] as const),
+          ...(this.rawHide === 0 ? [] : [{ itemId: "raw_hide", displayName: "生皮", category: "material", quantity: this.rawHide }] as const),
           ...(this.wornAxe === 0 ? [] : [{ itemId: "worn_axe", displayName: "破旧斧", category: "equipment", quantity: this.wornAxe }] as const),
           ...(this.wornPickaxe === 0 ? [] : [{ itemId: "worn_pickaxe", displayName: "破旧镐", category: "equipment", quantity: this.wornPickaxe }] as const),
           ...(this.reinforcedAxe === 0 ? [] : [{ itemId: "reinforced_axe", displayName: "强化斧", category: "equipment", quantity: this.reinforcedAxe }] as const),
@@ -1064,6 +1465,10 @@ export class GameplayEngine {
         ],
       },
       equipment: this.position === null ? null : {
+        weapon: {
+          itemId: "worn_blade", displayName: "破旧短刃", damageMin: 4, damageMax: 6,
+          accuracyBonus: 5, attackIntervalMs: "2500", requiredMeleeLevel: 1,
+        },
         axe: this.equipment.axe === null ? null : this.toolEquipmentSummary(this.equipment.axe),
         pickaxe: this.equipment.pickaxe === null ? null : this.toolEquipmentSummary(this.equipment.pickaxe),
       },
@@ -1091,12 +1496,19 @@ export class GameplayEngine {
         };
       }),
       knownTargetPrototypeIds: RESOURCE_PROTOTYPE_ORDER.filter((prototypeId) => this.hasKnownPrototype(prototypeId)),
+      knownEnemyArchetypeIds: this.hasKnownEnemyArchetype("graymane_boar") ? ["graymane_boar"] : [],
+      combat: this.combatSummary(),
+      respawn: this.respawn === null ? null : {
+        deathPosition: clonePoint(this.respawn.deathPosition),
+        remainingMs: (this.respawn.deadlineWorldTimeMs > this.worldTimeMs ? this.respawn.deadlineWorldTimeMs - this.worldTimeMs : 0n).toString(),
+      },
       map: {
         revealedChunks: [...this.fog.entries()].sort(([left], [right]) => compareChunkKeysNumeric(left, right)).map(([chunkKey, bits]) => {
           const [chunkX, chunkY] = chunkKey.split(",") as [string, string];
           return { chunkKey, chunkX, chunkY, revealedBase64: fogBitsToBase64(bits) };
         }),
         resourcePlacements: this.resourcePlacementSummaries(),
+        enemyPlacements: this.enemyPlacementSummaries(),
         selectedDestination: null,
       },
       save: options.saveState ?? { state: saveRevision === 0 ? "none" : "saved", revision: saveRevision, committedWallClockMs, localOnly: true, evictionWarning: false, lastError: null },
@@ -1183,6 +1595,29 @@ export class GameplayEngine {
       this.reason = null;
       return;
     }
+    if (isHuntTask(this.task)) {
+      const task = this.task;
+      if (task.requestedKills !== null && task.completedKills >= task.requestedKills) {
+        this.clearRoute();
+        this.activityState = "waiting";
+        this.reason = TASK_COMPLETED_REASON;
+        return;
+      }
+      const candidates = [...this.knownEnemyPlacements.values()]
+        .filter((placement) => placement.archetypeId === task.archetypeId && placement.availability === "active")
+        .sort((left, right) => left.placementId < right.placementId ? -1 : left.placementId > right.placementId ? 1 : 0);
+      this.clearRoute();
+      this.currentTargetPlacementId = null;
+      if (candidates.length === 0) {
+        this.beginAutoExplore();
+        return;
+      }
+      this.enemyPlanning = { candidates, index: 0, planner: null, best: null };
+      this.activityState = "planning";
+      this.routePurpose = "task_target";
+      this.reason = null;
+      return;
+    }
     const level = levelFromTotalXp(this.totalXp);
     this.clearRoute();
     this.planner = new PlannerStepper(this.terrain, this.fog, this.position, observationRadius(level), this.task.destination);
@@ -1234,7 +1669,10 @@ export class GameplayEngine {
     this.reason = null;
     if (this.route.length <= 1 || plan.cost === 0n) {
       const revealed = this.revealAtCurrent(true);
-      if (this.routePurpose === "task_target") this.startResourceAction();
+      if (this.routePurpose === "task_target") {
+        if (isHuntTask(this.task)) this.startCombatForCurrentTarget(true);
+        else this.startResourceAction();
+      }
       else if (this.isAtTaskDestination()) { this.activityState = "waiting"; this.reason = TASK_COMPLETED_REASON; }
       else if (revealed === 0 && this.routePurpose !== "auto_explore") { this.activityState = "waiting"; this.reason = NO_FRONTIER_REASON; }
       else this.beginPlanning();
@@ -1269,7 +1707,10 @@ export class GameplayEngine {
   }
 
   private finishRoute(): void {
-    if (this.routePurpose === "task_target") this.startResourceAction();
+    if (this.routePurpose === "task_target") {
+      if (isHuntTask(this.task)) this.startCombatForCurrentTarget(true);
+      else this.startResourceAction();
+    }
     else if (this.isAtTaskDestination()) { this.activityState = "waiting"; this.reason = TASK_COMPLETED_REASON; }
     else this.beginPlanning();
   }
@@ -1284,6 +1725,7 @@ export class GameplayEngine {
   private clearRoute(): void {
     this.planner = null;
     this.resourcePlanning = null;
+    this.enemyPlanning = null;
     this.route = [];
     this.legCosts = [];
     this.legProfiles = [];
@@ -1317,6 +1759,7 @@ export class GameplayEngine {
       this.totalXp += result.newlyRevealed;
     }
     for (const placement of this.guaranteePlacements) this.discoverPlacementIfRevealed(placement);
+    for (const placement of this.enemyGuaranteePlacements) this.discoverEnemyIfRevealed(placement);
     for (const tile of result.newlyRevealedTiles) {
       const cellKey = `${contentCellForTile(tile.x)},${contentCellForTile(tile.y)}`;
       this.pendingContentCells.add(cellKey);
@@ -1354,19 +1797,25 @@ export class GameplayEngine {
     return Number(((this.worldTimeMs - action.startWorldTimeMs) * 1000n) / action.durationMs);
   }
 
-  private activityPhase(): GameplayReadModelV1["activity"]["phase"] {
+  private activityPhase(): GameplayReadModelV2["activity"]["phase"] {
+    if (this.activityState === "combat") return "combat";
+    if (this.activityState === "respawning") return "waiting_respawn";
     if (this.activityState === "paused") return "paused";
     if (this.activityState === "waiting") return "waiting";
     if (this.activityState === "acting") return this.action?.kind === "Produce" ? "production_action" : "resource_action";
     if (this.routePurpose === "auto_explore") return "auto_exploring";
     if (this.routePurpose === "task_target") return this.activityState === "planning" ? "acquiring_target" : "moving_to_target";
-    if (isResourceTask(this.task) && this.activityState === "planning") return "acquiring_target";
+    if ((isResourceTask(this.task) || isHuntTask(this.task)) && this.activityState === "planning") return "acquiring_target";
     if (this.activityState === "idle") return "idle";
     return "exploring";
   }
 
   private hasKnownPrototype(prototypeId: ResourcePrototypeId): boolean {
     return [...this.knownPlacements.values()].some((placement) => placement.prototypeId === prototypeId);
+  }
+
+  private hasKnownEnemyArchetype(archetypeId: EnemyArchetypeId): boolean {
+    return [...this.knownEnemyPlacements.values()].some((placement) => placement.archetypeId === archetypeId);
   }
 
   private discoverPlacementIfRevealed(definition: ResourcePlacementDefinition): boolean {
@@ -1385,6 +1834,27 @@ export class GameplayEngine {
       spawnCycle: 0,
       depletedWorldTimeMs: null,
       nextAvailableWorldTimeMs: null,
+    });
+    return true;
+  }
+
+  private discoverEnemyIfRevealed(definition: EnemyPlacementDefinition): boolean {
+    if (this.knownEnemyPlacements.has(definition.placementId)) return false;
+    const tileX = BigInt(definition.tileX);
+    const tileY = BigInt(definition.tileY);
+    if (!isRevealed(this.fog, tileX, tileY)) return false;
+    const resourceConflict = [...this.knownPlacements.values()]
+      .some((placement) => placement.tileX === definition.tileX && placement.tileY === definition.tileY);
+    if (resourceConflict) return false;
+    this.knownEnemyPlacements.set(definition.placementId, {
+      ...structuredClone(definition),
+      availability: "active",
+      spawnCycle: 0,
+      deadWorldTimeMs: null,
+      nextAvailableWorldTimeMs: null,
+      encounterChecked: false,
+      pendingStealthPass: false,
+      stealthSettled: false,
     });
     return true;
   }
@@ -1421,6 +1891,13 @@ export class GameplayEngine {
       const candidateTileY = BigInt(definition.tileY);
       if (this.terrain.terrainAtLoaded(candidateTileX, candidateTileY) !== BASE_TERRAIN_ID.Land) continue;
       this.discoverPlacementIfRevealed(definition);
+      occupiedTiles.add(`${definition.tileX},${definition.tileY}`);
+    }
+    for (const placement of this.enemyGuaranteePlacements) occupiedTiles.add(`${placement.tileX},${placement.tileY}`);
+    const enemy = ambientEnemyPlacementCandidate(this.seed, this.campAnchor, BigInt(cellXText), BigInt(cellYText));
+    if (enemy !== null && !occupiedTiles.has(`${enemy.tileX},${enemy.tileY}`)
+      && this.terrain.terrainAtLoaded(BigInt(enemy.tileX), BigInt(enemy.tileY)) === BASE_TERRAIN_ID.Land) {
+      this.discoverEnemyIfRevealed(enemy);
     }
     this.bumpRevision();
     return null;
@@ -1429,9 +1906,11 @@ export class GameplayEngine {
   private afterContentObservation(): void {
     if (this.pendingContentCells.size > 0) return;
     const task = this.task;
-    if (!isResourceTask(task)) return;
-    if ((this.routePurpose === "auto_explore" || this.activityState === "waiting")
-      && [...this.knownPlacements.values()].some((placement) => placement.prototypeId === task.targetPrototypeId && placement.availability === "active")) {
+    const resourceAvailable = isResourceTask(task) && [...this.knownPlacements.values()]
+      .some((placement) => placement.prototypeId === task.targetPrototypeId && placement.availability === "active");
+    const enemyAvailable = isHuntTask(task) && [...this.knownEnemyPlacements.values()]
+      .some((placement) => placement.archetypeId === task.archetypeId && placement.availability === "active");
+    if ((this.routePurpose === "auto_explore" || this.activityState === "waiting") && (resourceAvailable || enemyAvailable)) {
       this.materializeCurrentPosition();
       this.clearRoute();
       this.beginPlanning();
@@ -1468,6 +1947,45 @@ export class GameplayEngine {
     if (planning.index < planning.candidates.length) return { kind: "yield" };
     const best = planning.best;
     this.resourcePlanning = null;
+    if (best === null) {
+      this.beginAutoExplore();
+      return { kind: "yield" };
+    }
+    this.currentTargetPlacementId = best.placement.placementId;
+    this.routePurpose = "task_target";
+    this.installRoute(best.plan);
+    return { kind: "settled" };
+  }
+
+  private stepEnemyPlanning(maxOperations: number): EngineStepResult {
+    const planning = this.enemyPlanning;
+    if (planning === null || this.position === null) return { kind: "settled" };
+    let operations = 0;
+    while (operations < maxOperations && planning.index < planning.candidates.length) {
+      const placement = planning.candidates[planning.index]!;
+      if (planning.planner === null) {
+        planning.planner = new PlannerStepper(this.terrain, this.fog, this.position, observationRadius(levelFromTotalXp(this.totalXp)), placement.point);
+      }
+      const result = planning.planner.step(Math.max(1, maxOperations - operations));
+      if (result.kind === "terrain-required") return this.setTerrainEffect("navigation", result.chunkX, result.chunkY, result.chunkKey);
+      if (result.kind === "yield") return result;
+      if (result.kind === "route") {
+        this.unreachablePlacementIds.delete(placement.placementId);
+        const best = planning.best;
+        if (best === null || result.plan.cost < best.plan.cost
+          || (result.plan.cost === best.plan.cost && placement.placementId < best.placement.placementId)) {
+          planning.best = { placement, plan: result.plan };
+        }
+      } else {
+        this.unreachablePlacementIds.add(placement.placementId);
+      }
+      planning.index += 1;
+      planning.planner = null;
+      operations += 1;
+    }
+    if (planning.index < planning.candidates.length) return { kind: "yield" };
+    const best = planning.best;
+    this.enemyPlanning = null;
     if (best === null) {
       this.beginAutoExplore();
       return { kind: "yield" };
@@ -1620,6 +2138,535 @@ export class GameplayEngine {
     }
   }
 
+  private resetCombatProgress(): void {
+    this.playerMaxHpMicro = 100n * MICRO_HP_PER_HP;
+    this.playerHpMicro = this.playerMaxHpMicro;
+    this.hpRegenNumerator = 0n;
+    this.combat = null;
+    this.respawn = null;
+    this.revivalGraceUntilWorldTimeMs = null;
+    this.targetKills = 0;
+    this.otherKills = 0;
+    this.deaths = 0;
+    this.respawns = 0;
+  }
+
+  private advanceWorldTimeTo(worldTimeMs: bigint): void {
+    if (worldTimeMs < this.worldTimeMs) throw new RangeError("world time cannot move backward");
+    const elapsed = worldTimeMs - this.worldTimeMs;
+    if (elapsed > 0n && this.respawn === null) {
+      const recovered = applyNaturalRegen(this.playerHpMicro, this.playerMaxHpMicro, this.hpRegenNumerator, elapsed);
+      this.playerHpMicro = recovered.currentHpMicro;
+      this.hpRegenNumerator = recovered.regenNumerator;
+    }
+    this.worldTimeMs = worldTimeMs;
+  }
+
+  private persistedCombatState(): PersistedCombatState | null {
+    const combat = this.combat;
+    if (combat === null) return null;
+    return {
+      ...combat,
+      playerAttackIntervalMs: combat.playerAttackIntervalMs.toString(),
+      enemyAttackIntervalMs: combat.enemyAttackIntervalMs.toString(),
+      enemyHpMicro: combat.enemyHpMicro.toString(),
+      playerNextAttackWorldTimeMs: combat.playerNextAttackWorldTimeMs.toString(),
+      enemyNextAttackWorldTimeMs: combat.enemyNextAttackWorldTimeMs.toString(),
+      eventOrdinal: combat.eventOrdinal.toString(),
+      paused: combat.paused === null ? null : structuredClone(combat.paused),
+    };
+  }
+
+  private restoreCombatState(combat: PersistedCombatState): RuntimeCombatState {
+    return {
+      ...structuredClone(combat),
+      playerAttackIntervalMs: BigInt(combat.playerAttackIntervalMs),
+      enemyAttackIntervalMs: BigInt(combat.enemyAttackIntervalMs),
+      enemyHpMicro: BigInt(combat.enemyHpMicro),
+      playerNextAttackWorldTimeMs: BigInt(combat.playerNextAttackWorldTimeMs),
+      enemyNextAttackWorldTimeMs: BigInt(combat.enemyNextAttackWorldTimeMs),
+      eventOrdinal: BigInt(combat.eventOrdinal),
+    };
+  }
+
+  private combatSummary(): GameplayReadModelV2["combat"] {
+    const combat = this.combat;
+    if (combat === null) return null;
+    const enemy = ENEMY_DEFINITIONS[combat.archetypeId];
+    return {
+      combatId: combat.combatId,
+      encounterInstanceId: combat.encounterInstanceId,
+      placementId: combat.placementId,
+      archetypeId: combat.archetypeId,
+      displayName: enemy.displayName,
+      triggeredByHunt: combat.triggeredByHunt,
+      playerHpMicro: this.playerHpMicro.toString(),
+      playerMaxHpMicro: this.playerMaxHpMicro.toString(),
+      enemyHpMicro: combat.enemyHpMicro.toString(),
+      enemyMaxHpMicro: (BigInt(enemy.maxHp) * MICRO_HP_PER_HP).toString(),
+      playerNextAttackRemainingMs: (combat.playerNextAttackWorldTimeMs > this.worldTimeMs ? combat.playerNextAttackWorldTimeMs - this.worldTimeMs : 0n).toString(),
+      enemyNextAttackRemainingMs: (combat.enemyNextAttackWorldTimeMs > this.worldTimeMs ? combat.enemyNextAttackWorldTimeMs - this.worldTimeMs : 0n).toString(),
+      playerHitChancePpm: opposedChancePpm(combat.playerAccuracy, combat.enemyEvasion),
+      enemyHitChancePpm: opposedChancePpm(combat.enemyAccuracy, combat.playerEvasion),
+      lastAttack: combat.lastAttack,
+    };
+  }
+
+  private encounterInstanceId(placement: KnownEnemyPlacement): string {
+    return `${placement.placementId}@${placement.spawnCycle}`;
+  }
+
+  private capturePausedExecution(): PersistedPausedExecution | null {
+    const task = this.task;
+    if (task === null) return null;
+    const action = this.action;
+    const motion = this.motion;
+    return {
+      taskId: task.taskId,
+      targetPlacementId: this.currentTargetPlacementId,
+      routePurpose: this.routePurpose,
+      movement: motion === null ? null : {
+        route: this.route.map(clonePoint),
+        legProfiles: this.legProfiles.map(serializeSegmentProfile),
+        routeIndex: this.routeIndex,
+        elapsedRouteMs: (this.worldTimeMs - this.routeStartWorldTimeMs).toString(),
+        boundaryIndex: motion.boundaryIndex,
+      },
+      action: action === null ? null : action.kind === "Resource" ? {
+        kind: "Resource",
+        actionId: action.actionId,
+        placementId: action.placementId,
+        prototypeId: action.prototypeId,
+        remainingMs: (action.endWorldTimeMs > this.worldTimeMs ? action.endWorldTimeMs - this.worldTimeMs : 0n).toString(),
+        durationMs: action.durationMs.toString(),
+        skillSpeedBps: action.skillSpeedBps,
+        toolSpeedBps: action.toolSpeedBps,
+        totalSpeedBps: action.totalSpeedBps,
+      } : {
+        kind: "Produce",
+        actionId: action.actionId,
+        recipeId: action.recipeId,
+        remainingMs: (action.endWorldTimeMs > this.worldTimeMs ? action.endWorldTimeMs - this.worldTimeMs : 0n).toString(),
+        durationMs: action.durationMs.toString(),
+        skillSpeedBps: action.skillSpeedBps,
+        totalSpeedBps: action.totalSpeedBps,
+      },
+    };
+  }
+
+  private startCombatForCurrentTarget(triggeredByHunt: boolean): void {
+    const placementId = this.currentTargetPlacementId;
+    if (placementId === null) {
+      this.beginPlanning();
+      return;
+    }
+    const placement = this.knownEnemyPlacements.get(placementId);
+    if (placement === undefined || placement.availability !== "active") {
+      this.currentTargetPlacementId = null;
+      this.beginPlanning();
+      return;
+    }
+    this.enterCombat(placement, triggeredByHunt);
+  }
+
+  private enterCombat(placement: KnownEnemyPlacement, triggeredByHunt: boolean): void {
+    if (this.seed === null || this.position === null || this.combat !== null || this.respawn !== null || placement.availability !== "active") return;
+    this.materializeCurrentPosition();
+    const paused = this.capturePausedExecution();
+    const enemy = ENEMY_DEFINITIONS[placement.archetypeId];
+    const weapon = WEAPON_DEFINITIONS.worn_blade;
+    const meleeLevel = levelFromTotalXp(this.meleeXp);
+    const multiplierPercent = 100 + meleeLevel - 1;
+    const encounterInstanceId = this.encounterInstanceId(placement);
+    this.knownEnemyPlacements.set(placement.placementId, {
+      ...placement,
+      encounterChecked: true,
+      pendingStealthPass: false,
+    });
+    this.pendingTerrain = null;
+    this.action = null;
+    this.clearRoute();
+    this.currentTargetPlacementId = placement.placementId;
+    if (triggeredByHunt) this.revivalGraceUntilWorldTimeMs = null;
+    this.combat = {
+      combatId: `combat:${encounterInstanceId}:${this.worldTimeMs}`,
+      encounterInstanceId,
+      placementId: placement.placementId,
+      archetypeId: placement.archetypeId,
+      triggeredByHunt,
+      playerAccuracy: Math.max(1, 10 + 2 * meleeLevel + weapon.accuracyBonus),
+      playerEvasion: 10,
+      playerArmor: 0,
+      playerDamageMin: Math.floor(weapon.damageMin * multiplierPercent / 100),
+      playerDamageMax: Math.floor(weapon.damageMax * multiplierPercent / 100),
+      playerAttackIntervalMs: weapon.attackIntervalMs,
+      enemyAccuracy: enemy.accuracy,
+      enemyEvasion: enemy.evasion,
+      enemyArmor: enemy.armor,
+      enemyDamageMin: enemy.damageMin,
+      enemyDamageMax: enemy.damageMax,
+      enemyAttackIntervalMs: enemy.attackIntervalMs,
+      enemyHpMicro: BigInt(enemy.maxHp) * MICRO_HP_PER_HP,
+      playerNextAttackWorldTimeMs: this.worldTimeMs + weapon.attackIntervalMs,
+      enemyNextAttackWorldTimeMs: this.worldTimeMs + enemy.attackIntervalMs,
+      eventOrdinal: 0n,
+      lastAttack: null,
+      paused,
+    };
+    this.activityState = "combat";
+    this.reason = null;
+  }
+
+  private processCombatAttacksAt(worldTimeMs: bigint): void {
+    const combat = this.combat;
+    if (combat === null || this.seed === null) return;
+    if (combat.playerNextAttackWorldTimeMs === worldTimeMs) {
+      const hit = deterministicPpmRoll(this.seed, combat.encounterInstanceId, combat.eventOrdinal, "hit:player")
+        < opposedChancePpm(combat.playerAccuracy, combat.enemyEvasion);
+      const rawDamage = hit ? deterministicRangeInclusive(
+        this.seed, combat.encounterInstanceId, combat.eventOrdinal, "damage:player", combat.playerDamageMin, combat.playerDamageMax,
+      ) : 0;
+      const damage = hit ? finalPhysicalDamage(rawDamage, combat.enemyArmor) : 0;
+      combat.enemyHpMicro = combat.enemyHpMicro > BigInt(damage) * MICRO_HP_PER_HP
+        ? combat.enemyHpMicro - BigInt(damage) * MICRO_HP_PER_HP : 0n;
+      combat.lastAttack = { actor: "player", hit, damage };
+      combat.eventOrdinal += 1n;
+      if (combat.enemyHpMicro === 0n) {
+        this.settleEnemyKill();
+        return;
+      }
+      combat.playerNextAttackWorldTimeMs = worldTimeMs + combat.playerAttackIntervalMs;
+    }
+    if (this.combat !== combat || combat.enemyNextAttackWorldTimeMs !== worldTimeMs) return;
+    const hit = deterministicPpmRoll(this.seed, combat.encounterInstanceId, combat.eventOrdinal, "hit:enemy")
+      < opposedChancePpm(combat.enemyAccuracy, combat.playerEvasion);
+    const rawDamage = hit ? deterministicRangeInclusive(
+      this.seed, combat.encounterInstanceId, combat.eventOrdinal, "damage:enemy", combat.enemyDamageMin, combat.enemyDamageMax,
+    ) : 0;
+    const damage = hit ? finalPhysicalDamage(rawDamage, combat.playerArmor) : 0;
+    this.playerHpMicro = this.playerHpMicro > BigInt(damage) * MICRO_HP_PER_HP
+      ? this.playerHpMicro - BigInt(damage) * MICRO_HP_PER_HP : 0n;
+    combat.lastAttack = { actor: "enemy", hit, damage };
+    combat.eventOrdinal += 1n;
+    if (this.playerHpMicro === 0n) {
+      this.enterRespawnState();
+      return;
+    }
+    combat.enemyNextAttackWorldTimeMs = worldTimeMs + combat.enemyAttackIntervalMs;
+  }
+
+  private settleEnemyKill(): void {
+    const combat = this.combat;
+    if (combat === null) return;
+    const placement = this.knownEnemyPlacements.get(combat.placementId);
+    if (placement === undefined || placement.availability !== "active") throw new Error("combat enemy is not active at kill settlement");
+    const enemy = ENEMY_DEFINITIONS[combat.archetypeId];
+    const huntTask = isHuntTask(this.task) && this.task.archetypeId === combat.archetypeId ? this.task : null;
+    const nextRawHide = this.rawHide + enemy.loot.quantity;
+    const nextMeleeXp = this.meleeXp + enemy.meleeXp;
+    const nextTaskKills = huntTask === null ? null : huntTask.completedKills + 1;
+    const nextTargetKills = this.targetKills + (huntTask === null ? 0 : 1);
+    const nextOtherKills = this.otherKills + (huntTask === null ? 1 : 0);
+    if (![nextRawHide, nextMeleeXp, nextTaskKills ?? 0, nextTargetKills, nextOtherKills].every(Number.isSafeInteger)) {
+      throw new QuantityOverflowError("combat settlement exceeds safe integer storage");
+    }
+    this.knownEnemyPlacements.set(placement.placementId, {
+      ...placement,
+      availability: "dead",
+      deadWorldTimeMs: this.worldTimeMs.toString(),
+      nextAvailableWorldTimeMs: (this.worldTimeMs + enemy.respawnDurationMs).toString(),
+      encounterChecked: true,
+      pendingStealthPass: false,
+      stealthSettled: false,
+    });
+    this.rawHide = nextRawHide;
+    this.meleeXp = nextMeleeXp;
+    this.targetKills = nextTargetKills;
+    this.otherKills = nextOtherKills;
+    if (huntTask !== null && nextTaskKills !== null) this.task = { ...huntTask, completedKills: nextTaskKills };
+    const paused = combat.paused;
+    this.combat = null;
+    this.currentTargetPlacementId = null;
+    this.nextEventOrdinal += 1n;
+    this.immediateCommitPending = true;
+    if (isHuntTask(this.task) && this.task.requestedKills !== null && this.task.completedKills >= this.task.requestedKills) {
+      this.activityState = "waiting";
+      this.reason = TASK_COMPLETED_REASON;
+      return;
+    }
+    this.resumeAfterCombat(paused);
+  }
+
+  private enterRespawnState(): void {
+    const combat = this.combat;
+    if (combat === null || this.position === null) return;
+    const placement = this.knownEnemyPlacements.get(combat.placementId);
+    if (placement !== undefined) {
+      this.knownEnemyPlacements.set(placement.placementId, {
+        ...placement,
+        encounterChecked: false,
+        pendingStealthPass: false,
+        stealthSettled: false,
+      });
+    }
+    this.combat = null;
+    this.invalidatePendingStealthPasses();
+    this.action = null;
+    this.clearRoute();
+    this.currentTargetPlacementId = null;
+    this.hpRegenNumerator = 0n;
+    this.respawn = { deathPosition: clonePoint(this.position), deadlineWorldTimeMs: this.worldTimeMs + 60_000n };
+    if (this.deaths >= Number.MAX_SAFE_INTEGER) throw new QuantityOverflowError("death count exceeds safe integer storage");
+    this.deaths += 1;
+    this.activityState = "respawning";
+    this.reason = null;
+    this.immediateCommitPending = true;
+  }
+
+  private completePlayerRespawn(): void {
+    const respawn = this.respawn;
+    if (respawn === null) return;
+    this.position = clonePoint(respawn.deathPosition);
+    this.playerHpMicro = this.playerMaxHpMicro;
+    this.hpRegenNumerator = 0n;
+    this.respawn = null;
+    this.revivalGraceUntilWorldTimeMs = this.worldTimeMs + 5_000n;
+    if (this.respawns >= Number.MAX_SAFE_INTEGER) throw new QuantityOverflowError("respawn count exceeds safe integer storage");
+    this.respawns += 1;
+    if (this.task === null) {
+      this.activityState = "idle";
+      this.reason = null;
+    } else {
+      this.beginPlanning();
+    }
+    this.immediateCommitPending = true;
+  }
+
+  private resumeAfterCombat(paused: PersistedPausedExecution | null): void {
+    const task = this.task;
+    if (task === null) {
+      this.activityState = "idle";
+      this.reason = null;
+      return;
+    }
+    if (paused?.taskId === task.taskId && paused.movement !== null && this.pausedMovementPrerequisitesRemain(paused)) {
+      const movement = paused.movement;
+      const profiles = movement.legProfiles.map(restoreSegmentProfile);
+      const legCosts = profiles.map((profile) => profile.cost);
+      const cumulativeCosts: bigint[] = [0n];
+      for (const cost of legCosts) cumulativeCosts.push(cumulativeCosts.at(-1)! + cost);
+      const profile = profiles[movement.routeIndex];
+      const cumulativeCostBefore = cumulativeCosts[movement.routeIndex];
+      if (profile !== undefined && cumulativeCostBefore !== undefined && movement.route.length === profiles.length + 1) {
+        this.route = movement.route.map(clonePoint);
+        this.legProfiles = profiles;
+        this.legCosts = legCosts;
+        this.routeCumulativeCosts = cumulativeCosts;
+        this.routeTotalCost = cumulativeCosts.at(-1)!;
+        this.routeIndex = movement.routeIndex;
+        this.routePurpose = paused.routePurpose;
+        this.currentTargetPlacementId = paused.targetPlacementId;
+        this.routeStartWorldTimeMs = this.worldTimeMs - BigInt(movement.elapsedRouteMs);
+        this.motion = {
+          profile,
+          endWorldTimeMs: this.routeStartWorldTimeMs + ((cumulativeCostBefore + profile.cost) * 1000n + 2047n) / 2048n,
+          pathIndex: movement.routeIndex,
+          cumulativeCostBefore,
+          boundaryWorldTimes: profile.boundaryParameters.map((parameter) => this.routeStartWorldTimeMs
+            + routeEventTimeMs(cumulativeCostBefore, profile, parameter)),
+          boundaryIndex: movement.boundaryIndex,
+        };
+        this.action = null;
+        this.activityState = "moving";
+        this.reason = null;
+        return;
+      }
+    }
+    if (paused?.taskId === task.taskId && paused.action !== null) {
+      const remainingMs = BigInt(paused.action.remainingMs);
+      if (paused.action.kind === "Resource" && isResourceTask(task)
+        && task.targetPrototypeId === paused.action.prototypeId && this.hasRequiredTool(paused.action.prototypeId)) {
+        const placement = this.knownPlacements.get(paused.action.placementId);
+        if (placement?.availability === "active") {
+          this.currentTargetPlacementId = placement.placementId;
+          this.action = {
+            ...paused.action,
+            startWorldTimeMs: this.worldTimeMs - (BigInt(paused.action.durationMs) - remainingMs),
+            endWorldTimeMs: this.worldTimeMs + remainingMs,
+            durationMs: BigInt(paused.action.durationMs),
+          };
+          this.activityState = "acting";
+          this.reason = null;
+          return;
+        }
+      }
+      if (paused.action.kind === "Produce" && isProduceTask(task) && task.recipeId === paused.action.recipeId) {
+        const definition = recipeDefinition(paused.action.recipeId);
+        if (definition.inputs.every((input) => this.itemQuantity(input.itemId) >= input.quantity)) {
+          this.action = {
+            ...paused.action,
+            startWorldTimeMs: this.worldTimeMs - (BigInt(paused.action.durationMs) - remainingMs),
+            endWorldTimeMs: this.worldTimeMs + remainingMs,
+            durationMs: BigInt(paused.action.durationMs),
+          };
+          this.activityState = "acting";
+          this.reason = null;
+          return;
+        }
+      }
+    }
+    this.action = null;
+    this.currentTargetPlacementId = null;
+    this.beginPlanning();
+  }
+
+  private pausedMovementPrerequisitesRemain(paused: PersistedPausedExecution): boolean {
+    const task = this.task;
+    if (task === null) return false;
+    if (paused.routePurpose === "explore") return task.kind === "Explore";
+    if (paused.routePurpose === "auto_explore") return isResourceTask(task) || isHuntTask(task);
+    if (paused.routePurpose !== "task_target" || paused.targetPlacementId === null) return false;
+    if (isResourceTask(task)) {
+      const placement = this.knownPlacements.get(paused.targetPlacementId);
+      return placement?.availability === "active" && placement.prototypeId === task.targetPrototypeId
+        && this.hasRequiredTool(task.targetPrototypeId);
+    }
+    if (isHuntTask(task)) {
+      const placement = this.knownEnemyPlacements.get(paused.targetPlacementId);
+      return placement?.availability === "active" && placement.archetypeId === task.archetypeId;
+    }
+    return false;
+  }
+
+  private pointInsideEnemy(point: WorldPoint, placement: KnownEnemyPlacement): boolean {
+    const enemy = ENEMY_DEFINITIONS[placement.archetypeId];
+    const dx = BigInt(point.x) - BigInt(placement.point.x);
+    const dy = BigInt(point.y) - BigInt(placement.point.y);
+    return dx * dx + dy * dy <= enemy.detectionRadiusNav * enemy.detectionRadiusNav;
+  }
+
+  private firstMotionTime(
+    motion: MotionLeg,
+    predicate: (point: WorldPoint) => boolean,
+  ): bigint {
+    let low = this.worldTimeMs;
+    let high = motion.endWorldTimeMs;
+    while (low + 1n < high) {
+      const middle = (low + high) >> 1n;
+      if (predicate(this.positionForMotion(motion, middle))) high = middle;
+      else low = middle;
+    }
+    return high;
+  }
+
+  private nextMotionThreatWorldTime(motion: MotionLeg): bigint | null {
+    if (this.position === null) return null;
+    let next: bigint | null = null;
+    const end = motion.profile.end;
+    for (const placement of [...this.knownEnemyPlacements.values()].sort((left, right) => this.encounterInstanceId(left) < this.encounterInstanceId(right) ? -1 : 1)) {
+      if (placement.availability !== "active") continue;
+      const insideNow = this.pointInsideEnemy(this.position, placement);
+      if (placement.pendingStealthPass) {
+        if (!insideNow) return this.worldTimeMs;
+        if (this.pointInsideEnemy(end, placement)) continue;
+        const candidate = this.firstMotionTime(motion, (point) => !this.pointInsideEnemy(point, placement));
+        if (next === null || candidate < next) next = candidate;
+        continue;
+      }
+      if (placement.encounterChecked) continue;
+      const hunt = isHuntTask(this.task) && this.task.archetypeId === placement.archetypeId;
+      if (!hunt && this.revivalGraceUntilWorldTimeMs !== null && this.revivalGraceUntilWorldTimeMs > this.worldTimeMs) continue;
+      if (insideNow) return this.worldTimeMs;
+      const enemy = ENEMY_DEFINITIONS[placement.archetypeId];
+      if (!sweptSegmentIntersectsCircle(
+        { x: BigInt(this.position.x), y: BigInt(this.position.y) },
+        { x: BigInt(end.x), y: BigInt(end.y) },
+        { x: BigInt(placement.point.x), y: BigInt(placement.point.y) },
+        enemy.detectionRadiusNav,
+      )) continue;
+      const candidate = this.firstMotionTime(motion, (point) => sweptSegmentIntersectsCircle(
+        { x: BigInt(this.position!.x), y: BigInt(this.position!.y) },
+        { x: BigInt(point.x), y: BigInt(point.y) },
+        { x: BigInt(placement.point.x), y: BigInt(placement.point.y) },
+        enemy.detectionRadiusNav,
+      ));
+      if (next === null || candidate < next) next = candidate;
+    }
+    return next;
+  }
+
+  private processMotionThreatsAt(motion: MotionLeg, worldTimeMs: bigint): void {
+    if (this.position === null) return;
+    const previousTime = worldTimeMs > this.routeStartWorldTimeMs ? worldTimeMs - 1n : worldTimeMs;
+    const previous = this.positionForMotion(motion, previousTime);
+    const current = clonePoint(this.position);
+    for (const placement of [...this.knownEnemyPlacements.values()].sort((left, right) => this.encounterInstanceId(left) < this.encounterInstanceId(right) ? -1 : 1)) {
+      if (placement.availability !== "active" || !placement.pendingStealthPass || this.pointInsideEnemy(current, placement)) continue;
+      this.settleStealthPass(placement);
+    }
+    const candidates = [...this.knownEnemyPlacements.values()].filter((placement) => {
+      if (placement.availability !== "active" || placement.encounterChecked) return false;
+      const hunt = isHuntTask(this.task) && this.task.archetypeId === placement.archetypeId;
+      if (!hunt && this.revivalGraceUntilWorldTimeMs !== null && this.revivalGraceUntilWorldTimeMs > worldTimeMs) return false;
+      const enemy = ENEMY_DEFINITIONS[placement.archetypeId];
+      return this.pointInsideEnemy(current, placement) || sweptSegmentIntersectsCircle(
+        { x: BigInt(previous.x), y: BigInt(previous.y) },
+        { x: BigInt(current.x), y: BigInt(current.y) },
+        { x: BigInt(placement.point.x), y: BigInt(placement.point.y) },
+        enemy.detectionRadiusNav,
+      );
+    }).sort((left, right) => this.encounterInstanceId(left) < this.encounterInstanceId(right) ? -1 : 1);
+    const selected = candidates[0];
+    if (selected !== undefined) this.evaluateEncounter(selected);
+  }
+
+  private evaluateEncountersAtCurrent(): void {
+    if (this.position === null || this.combat !== null || this.respawn !== null) return;
+    const candidates = [...this.knownEnemyPlacements.values()]
+      .filter((placement) => placement.availability === "active" && !placement.encounterChecked && this.pointInsideEnemy(this.position!, placement))
+      .sort((left, right) => this.encounterInstanceId(left) < this.encounterInstanceId(right) ? -1 : 1);
+    const selected = candidates[0];
+    if (selected !== undefined) this.evaluateEncounter(selected);
+  }
+
+  private evaluateEncounter(placement: KnownEnemyPlacement): void {
+    if (this.seed === null) return;
+    const hunt = isHuntTask(this.task) && this.task.archetypeId === placement.archetypeId;
+    if (hunt) {
+      this.enterCombat(placement, true);
+      return;
+    }
+    if (this.revivalGraceUntilWorldTimeMs !== null && this.revivalGraceUntilWorldTimeMs > this.worldTimeMs) return;
+    const enemy = ENEMY_DEFINITIONS[placement.archetypeId];
+    const stealthRating = Math.max(1, 10 + 2 * levelFromTotalXp(this.stealthXp));
+    const detected = deterministicPpmRoll(this.seed, this.encounterInstanceId(placement), 0n, "detect")
+      < opposedChancePpm(enemy.perception, stealthRating);
+    const updated = { ...placement, encounterChecked: true, pendingStealthPass: !detected };
+    this.knownEnemyPlacements.set(placement.placementId, updated);
+    if (detected) this.enterCombat(updated, false);
+  }
+
+  private settleStealthPass(placement: KnownEnemyPlacement): void {
+    if (!placement.pendingStealthPass || placement.stealthSettled) return;
+    const nextXp = this.stealthXp + ENEMY_DEFINITIONS[placement.archetypeId].stealthXp;
+    if (!Number.isSafeInteger(nextXp)) throw new QuantityOverflowError("stealth XP exceeds safe integer storage");
+    this.stealthXp = nextXp;
+    this.knownEnemyPlacements.set(placement.placementId, {
+      ...placement,
+      pendingStealthPass: false,
+      stealthSettled: true,
+    });
+    this.nextEventOrdinal += 1n;
+    this.immediateCommitPending = true;
+  }
+
+  private invalidatePendingStealthPasses(): void {
+    for (const placement of this.knownEnemyPlacements.values()) {
+      if (!placement.pendingStealthPass) continue;
+      this.knownEnemyPlacements.set(placement.placementId, { ...placement, pendingStealthPass: false });
+    }
+  }
+
   private nextRespawnWorldTime(): bigint | null {
     let next: bigint | null = null;
     for (const placement of this.knownPlacements.values()) {
@@ -1628,11 +2675,18 @@ export class GameplayEngine {
       const candidate = availableAt <= this.worldTimeMs ? this.worldTimeMs : availableAt;
       if (next === null || candidate < next) next = candidate;
     }
+    for (const placement of this.knownEnemyPlacements.values()) {
+      if (placement.availability !== "dead" || placement.nextAvailableWorldTimeMs === null) continue;
+      const availableAt = BigInt(placement.nextAvailableWorldTimeMs);
+      const candidate = availableAt <= this.worldTimeMs ? this.worldTimeMs : availableAt;
+      if (next === null || candidate < next) next = candidate;
+    }
     return next;
   }
 
   private processRespawnsAt(worldTimeMs: bigint): void {
-    let awakened = false;
+    let resourceAwakened = false;
+    let enemyAwakened = false;
     for (const placement of [...this.knownPlacements.values()].sort((left, right) => left.placementId < right.placementId ? -1 : 1)) {
       if (placement.availability !== "depleted" || placement.nextAvailableWorldTimeMs === null
         || BigInt(placement.nextAvailableWorldTimeMs) > worldTimeMs) continue;
@@ -1644,16 +2698,37 @@ export class GameplayEngine {
         depletedWorldTimeMs: null,
         nextAvailableWorldTimeMs: null,
       });
-      awakened = true;
+      resourceAwakened = true;
     }
-    if (awakened && isResourceTask(this.task) && (this.activityState === "waiting" || this.routePurpose === "auto_explore")) {
+    for (const placement of [...this.knownEnemyPlacements.values()].sort((left, right) => left.placementId < right.placementId ? -1 : 1)) {
+      if (placement.availability !== "dead" || placement.nextAvailableWorldTimeMs === null
+        || BigInt(placement.nextAvailableWorldTimeMs) > worldTimeMs) continue;
+      if (placement.spawnCycle >= Number.MAX_SAFE_INTEGER) throw new QuantityOverflowError("enemy spawn cycle exceeds safe integer storage");
+      this.knownEnemyPlacements.set(placement.placementId, {
+        ...placement,
+        availability: "active",
+        spawnCycle: placement.spawnCycle + 1,
+        deadWorldTimeMs: null,
+        nextAvailableWorldTimeMs: null,
+        encounterChecked: false,
+        pendingStealthPass: false,
+        stealthSettled: false,
+      });
+      enemyAwakened = true;
+    }
+    if (resourceAwakened && isResourceTask(this.task) && (this.activityState === "waiting" || this.routePurpose === "auto_explore")) {
+      this.materializeCurrentPosition();
+      this.clearRoute();
+      this.beginPlanning();
+    }
+    if (enemyAwakened && isHuntTask(this.task) && (this.activityState === "waiting" || this.routePurpose === "auto_explore")) {
       this.materializeCurrentPosition();
       this.clearRoute();
       this.beginPlanning();
     }
   }
 
-  private resourcePlacementSummaries(): GameplayReadModelV1["map"]["resourcePlacements"] {
+  private resourcePlacementSummaries(): GameplayReadModelV2["map"]["resourcePlacements"] {
     return [...this.knownPlacements.values()].sort((left, right) => left.placementId < right.placementId ? -1 : 1).map((placement) => {
       const definition = resourceDefinition(placement.prototypeId);
       const skillLevel = levelFromTotalXp(this.skillXpFor(definition.skillId));
@@ -1670,6 +2745,27 @@ export class GameplayEngine {
         requiredLevel: definition.requiredLevel,
         locked: skillLevel < definition.requiredLevel,
         requiredTool: definition.requiredTool,
+        mapColor: definition.mapColor,
+        point: clonePoint(placement.point),
+        state,
+        respawnRemainingMs: remaining?.toString() ?? null,
+        reachable: this.unreachablePlacementIds.has(placement.placementId) ? "unreachable" as const
+          : this.currentTargetPlacementId === placement.placementId ? "reachable" as const : "unknown" as const,
+      };
+    });
+  }
+
+  private enemyPlacementSummaries(): GameplayReadModelV2["map"]["enemyPlacements"] {
+    return [...this.knownEnemyPlacements.values()].sort((left, right) => left.placementId < right.placementId ? -1 : 1).map((placement) => {
+      const definition = ENEMY_DEFINITIONS[placement.archetypeId];
+      const remaining = placement.nextAvailableWorldTimeMs === null ? null
+        : BigInt(placement.nextAvailableWorldTimeMs) > this.worldTimeMs ? BigInt(placement.nextAvailableWorldTimeMs) - this.worldTimeMs : 0n;
+      const state = placement.availability === "active" ? "active" as const
+        : placement.deadWorldTimeMs === this.worldTimeMs.toString() ? "dead" as const : "respawning" as const;
+      return {
+        placementId: placement.placementId,
+        archetypeId: placement.archetypeId,
+        displayName: definition.displayName,
         mapColor: definition.mapColor,
         point: clonePoint(placement.point),
         state,
@@ -1703,6 +2799,7 @@ export class GameplayEngine {
       case "stone": return this.stone;
       case "copper_ore": return this.copperOre;
       case "rope": return this.rope;
+      case "raw_hide": return this.rawHide;
     }
   }
 
@@ -1713,16 +2810,19 @@ export class GameplayEngine {
       case "stone": this.stone = value; return;
       case "copper_ore": this.copperOre = value; return;
       case "rope": this.rope = value; return;
+      case "raw_hide": this.rawHide = value; return;
     }
   }
 
   private itemQuantity(itemId: ItemId): number {
+    if (itemId === "worn_blade") return 0;
     return itemId === "worn_axe" || itemId === "worn_pickaxe" || itemId === "reinforced_axe" || itemId === "reinforced_pickaxe"
       ? this.toolInventoryQuantity(itemId)
       : this.materialQuantity(itemId);
   }
 
   private setItemQuantity(itemId: ItemId, value: number): void {
+    if (itemId === "worn_blade") throw new TypeError("fixed weapon loadout is not inventory-backed");
     if (itemId === "worn_axe" || itemId === "worn_pickaxe" || itemId === "reinforced_axe" || itemId === "reinforced_pickaxe") {
       this.setToolInventoryQuantity(itemId, value);
     } else {
@@ -1748,7 +2848,7 @@ export class GameplayEngine {
     }
   }
 
-  private toolEquipmentSummary(itemId: ToolItemId): NonNullable<GameplayReadModelV1["equipment"]>[ToolSlot] {
+  private toolEquipmentSummary(itemId: ToolItemId): NonNullable<GameplayReadModelV2["equipment"]>[ToolSlot] {
     const tool = TOOL_DEFINITIONS[itemId];
     return { itemId, displayName: tool.displayName, tier: tool.tier, speedBps: tool.speedBps };
   }
@@ -1787,6 +2887,7 @@ export class GameplayEngine {
 
   private persistedWorldChunks(): EnginePersistedState["worldChunks"] {
     const placementsByChunk = new Map<string, KnownResourcePlacement[]>();
+    const enemiesByChunk = new Map<string, KnownEnemyPlacement[]>();
     const chunkSize = BigInt(RUNTIME_CHUNK_SIZE);
     for (const placement of this.knownPlacements.values()) {
       const chunkX = floorDiv(BigInt(placement.tileX), chunkSize);
@@ -1796,11 +2897,20 @@ export class GameplayEngine {
       values.push(structuredClone(placement));
       placementsByChunk.set(key, values);
     }
-    const keys = new Set([...this.fog.keys(), ...placementsByChunk.keys()]);
+    for (const placement of this.knownEnemyPlacements.values()) {
+      const chunkX = floorDiv(BigInt(placement.tileX), chunkSize);
+      const chunkY = floorDiv(BigInt(placement.tileY), chunkSize);
+      const key = `${chunkX},${chunkY}`;
+      const values = enemiesByChunk.get(key) ?? [];
+      values.push(structuredClone(placement));
+      enemiesByChunk.set(key, values);
+    }
+    const keys = new Set([...this.fog.keys(), ...placementsByChunk.keys(), ...enemiesByChunk.keys()]);
     return [...keys].sort(compareChunkKeysNumeric).map((chunkKey) => ({
       chunkKey,
       revealedBase64: fogBitsToBase64(this.fog.get(chunkKey) ?? new Uint8Array(512)),
       knownPlacements: (placementsByChunk.get(chunkKey) ?? []).sort((left, right) => left.placementId < right.placementId ? -1 : 1),
+      knownEnemyPlacements: (enemiesByChunk.get(chunkKey) ?? []).sort((left, right) => left.placementId < right.placementId ? -1 : 1),
     }));
   }
 }

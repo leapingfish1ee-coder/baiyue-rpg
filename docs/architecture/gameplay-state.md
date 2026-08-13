@@ -1,10 +1,10 @@
 # 玩法状态边界
 
-状态：已确认概念设计；阶段 1 至 2C 子集已实现，战斗、死亡与叙事边界尚未实现。
+状态：已确认概念设计；阶段 1 至 3A 子集已实现，叙事边界尚未实现。
 
 玩法状态必须与确定性地形生成、渲染和内容定义分离。本文定义所有权和持久化边界，不规定代码语言、数据库或序列化格式。
 
-[存档与离线结算协议](../requirements/save-offline-protocol.md)已经接受 IndexedDB store 边界、gameplay worker 单写入者和 offline claim。阶段 1 至 2C 的精确 keyPath 与字段已经实现；当前增量见[阶段 2C 运行时契约](../specifications/phase-2c-runtime-contracts.md)。未来战斗、死亡和叙事字段仍须在对应实现专项中封板。
+[存档与离线结算协议](../requirements/save-offline-protocol.md)已经接受 IndexedDB store 边界、gameplay worker 单写入者和 offline claim。阶段 1 至 3A 的精确 keyPath 与字段已经实现；当前增量见[阶段 3A 运行时契约](../specifications/phase-3a-runtime-contracts.md)。未来叙事字段仍须在对应实现专项中封板。
 
 ## 状态关系
 
@@ -158,4 +158,4 @@ HP 归零时立即结束战斗、清除 temporary effects、令导致死亡且�
 
 加载时可以根据保存的有效 movement/action progress 恢复被中断执行，或从相同权威输入稳定重算。死亡时已经取消的 movement/action 不得恢复。完整 path 仍是可失效 cache，不是持久化真源；两种恢复路线不能产生不同结算结果。
 
-事务 commit、dirty chunk records、自动保存和导入导出已按[存档协议](../requirements/save-offline-protocol.md)实现阶段 1 至 2C 范围。未来系统仍须复用同一四-store 边界，不得建立第二套持久化真源。
+事务 commit、dirty chunk records、自动保存和导入导出已按[存档协议](../requirements/save-offline-protocol.md)实现阶段 1 至 3A 范围。未来系统仍须复用同一四-store 边界，不得建立第二套持久化真源。

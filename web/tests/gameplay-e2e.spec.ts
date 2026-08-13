@@ -139,3 +139,42 @@ test("rope production exposes missing fiber, settles once after gathering, and s
   await page.waitForTimeout(1_000);
   await expect(ropeRow).toHaveText(/绳索\s*1/);
 });
+
+test("discover a graymane boar, Hunt once, settle combat, and reload without duplicate rewards", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("./");
+  await expect(page.locator("#create-world")).toBeEnabled({ timeout: 30_000 });
+  await page.locator("#world-seed").fill("20260809");
+  await page.locator("#create-world").click();
+
+  await expect(page.locator("#journey-panel")).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator("#weapon-equipped")).toHaveText("破旧短刃");
+  await expect(page.locator("#weapon-detail")).toContainText("4–6 伤害");
+
+  await page.locator("#choose-destination").click();
+  await page.locator("#destination-x").fill("-10");
+  await page.locator("#destination-y").fill("28");
+  await page.locator("#destination-confirm").click();
+  await expect(page.locator("#hunt-controls")).toBeVisible({ timeout: 45_000 });
+  await page.locator("#hunt-quantity").fill("1");
+  await page.locator("#hunt-finite").click();
+
+  await expect(page.locator("#combat-panel")).toBeVisible({ timeout: 45_000 });
+  await expect(page.locator("#combat-enemy-name")).toHaveText("灰鬃野猪");
+  await expect(page.locator("#combat-trigger")).toHaveText("定向狩猎");
+  await expect(page.locator("#combat-panel")).toBeHidden({ timeout: 45_000 });
+
+  const rawHideRow = page.locator("#material-list .compact-stat").filter({ hasText: "生皮" });
+  await expect(rawHideRow).toHaveText(/生皮\s*1/);
+  await expect(page.locator("#melee-xp")).toContainText("30 / 100 XP");
+  await expect(page.locator("#hunt-progress")).toHaveText("1 / 1");
+  await expect(page.locator("#save-state")).toContainText("已保存");
+
+  await page.reload();
+  await expect(page.locator("#journey-panel")).toBeVisible({ timeout: 30_000 });
+  await expect(rawHideRow).toHaveText(/生皮\s*1/);
+  await expect(page.locator("#melee-xp")).toContainText("30 / 100 XP");
+  await expect(page.locator("#hunt-progress")).toHaveText("1 / 1");
+  await page.waitForTimeout(1_000);
+  await expect(rawHideRow).toHaveText(/生皮\s*1/);
+});

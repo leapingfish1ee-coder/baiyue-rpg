@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { canonicalJson, compareCodePoints } from "../src/gameplay/canonical-json.ts";
-import { RECIPE_DEFINITIONS, ambientPlacementCandidate, authoritativeCraftingDuration, authoritativeGatherDuration, authoritativeResourceDuration, contentCellForTile, resolveAmbientPlacementConflicts } from "../src/gameplay/content.ts";
+import { ENEMY_DEFINITIONS, RECIPE_DEFINITIONS, ambientEnemyPlacementCandidate, ambientPlacementCandidate, authoritativeCraftingDuration, authoritativeGatherDuration, authoritativeResourceDuration, contentCellForTile, resolveAmbientPlacementConflicts } from "../src/gameplay/content.ts";
+import { applyNaturalRegen, deterministicPpmRoll, deterministicRangeInclusive, opposedChancePpm, powSevenFifthsScaled } from "../src/gameplay/combat.ts";
 import { GameplayEngine } from "../src/gameplay/engine.ts";
 import { revealObservation, revealTile, revealedTiles } from "../src/gameplay/fog.ts";
 import { selectIntersectingCircleByStableId, sweptSegmentIntersectsCircle } from "../src/gameplay/geometry.ts";
@@ -353,10 +354,10 @@ function driveEngine(engine, terrainForRequest, operationBudget = 32) {
   throw new Error("engine fixture exceeded deterministic operation budget");
 }
 
-function createLandEngine() {
+function createLandEngine(seed = "20260809") {
   const requests = [];
   const engine = new GameplayEngine(3);
-  engine.beginCreateWorld("20260809");
+  engine.beginCreateWorld(seed);
   driveEngine(engine, (request) => {
     requests.push(request);
     return new Uint8Array(4096).fill(3);
@@ -377,11 +378,14 @@ function restoreFixtureEngine(created, overrides = {}) {
     woodcuttingXp: saved.woodcuttingXp,
     miningXp: saved.miningXp,
     craftingXp: saved.craftingXp,
+    meleeXp: saved.meleeXp,
+    stealthXp: saved.stealthXp,
     fiber: saved.fiber,
     softwood: saved.softwood,
     stone: saved.stone,
     copperOre: saved.copperOre,
     rope: saved.rope,
+    rawHide: saved.rawHide,
     wornAxe: saved.wornAxe,
     wornPickaxe: saved.wornPickaxe,
     reinforcedAxe: saved.reinforcedAxe,
@@ -394,6 +398,16 @@ function restoreFixtureEngine(created, overrides = {}) {
     action: saved.execution.action,
     waitingReason: saved.execution.waitingReason,
     worldChunks: saved.worldChunks,
+    playerHpMicro: saved.playerHpMicro,
+    playerMaxHpMicro: saved.playerMaxHpMicro,
+    hpRegenNumerator: saved.hpRegenNumerator,
+    combat: saved.combat,
+    respawn: saved.respawn,
+    revivalGraceUntilWorldTimeMs: saved.revivalGraceUntilWorldTimeMs,
+    targetKills: saved.targetKills,
+    otherKills: saved.otherKills,
+    deaths: saved.deaths,
+    respawns: saved.respawns,
     nextEventOrdinal: saved.nextEventOrdinal,
     ...overrides,
   });
@@ -401,11 +415,73 @@ function restoreFixtureEngine(created, overrides = {}) {
   return engine;
 }
 
+function enemyFixtureState(created, index = 0, overrides = {}) {
+  const saved = created.persistedState();
+  const definition = created.enemyGuaranteePlacements[index];
+  assert.ok(definition, "enemy guarantee must exist");
+  const placement = {
+    ...definition,
+    availability: "active",
+    spawnCycle: 0,
+    deadWorldTimeMs: null,
+    nextAvailableWorldTimeMs: null,
+    encounterChecked: false,
+    pendingStealthPass: false,
+    stealthSettled: false,
+  };
+  const chunkKey = `${floorDiv(BigInt(definition.tileX), 64n)},${floorDiv(BigInt(definition.tileY), 64n)}`;
+  const worldChunks = saved.worldChunks.map((chunk) => ({
+    ...chunk,
+    knownPlacements: [...chunk.knownPlacements],
+    knownEnemyPlacements: [...chunk.knownEnemyPlacements],
+  }));
+  let chunk = worldChunks.find((candidate) => candidate.chunkKey === chunkKey);
+  if (chunk === undefined) {
+    chunk = { chunkKey, revealedBase64: Buffer.alloc(512, 255).toString("base64"), knownPlacements: [], knownEnemyPlacements: [] };
+    worldChunks.push(chunk);
+  }
+  chunk.revealedBase64 = Buffer.alloc(512, 255).toString("base64");
+  chunk.knownEnemyPlacements = [...chunk.knownEnemyPlacements.filter((candidate) => candidate.placementId !== placement.placementId), placement];
+  return { definition, placement, worldChunks, overrides };
+}
+
+function restoreAtKnownEnemy(created, index = 0, overrides = {}) {
+  const fixture = enemyFixtureState(created, index, overrides);
+  return {
+    ...fixture,
+    engine: restoreFixtureEngine(created, {
+      position: fixture.definition.point,
+      task: null,
+      executionState: "idle",
+      routePurpose: null,
+      targetPlacementId: null,
+      action: null,
+      waitingReason: null,
+      worldChunks: fixture.worldChunks,
+      ...overrides,
+    }),
+  };
+}
+
+function advanceNextCombatEvent(engine) {
+  const combat = engine.toReadModel().combat;
+  assert.ok(combat);
+  const player = BigInt(combat.playerNextAttackRemainingMs);
+  const enemy = BigInt(combat.enemyNextAttackRemainingMs);
+  engine.advanceBy(player < enemy ? player : enemy);
+}
+
 function driveToAction(engine) {
-  for (let iteration = 0; iteration < 2_000 && engine.snapshot().activityState !== "acting"; iteration += 1) {
+  for (let iteration = 0; iteration < 20_000 && engine.snapshot().activityState !== "acting"; iteration += 1) {
     driveEngine(engine, () => new Uint8Array(4096).fill(3));
-    const activity = engine.toReadModel().activity;
+    const model = engine.toReadModel();
+    const activity = model.activity;
     if (activity.state === "moving") engine.advanceBy(BigInt(activity.etaMs));
+    else if (activity.state === "combat" && model.combat !== null) {
+      engine.advanceBy(BigInt(model.combat.playerNextAttackRemainingMs) < BigInt(model.combat.enemyNextAttackRemainingMs)
+        ? BigInt(model.combat.playerNextAttackRemainingMs) : BigInt(model.combat.enemyNextAttackRemainingMs));
+    } else if (activity.state === "respawning" && model.respawn !== null) engine.advanceBy(BigInt(model.respawn.remainingMs));
+    if (engine.needsImmediateCommit) engine.acknowledgeImmediateCommit();
   }
   assert.equal(engine.snapshot().activityState, "acting", JSON.stringify(engine.toReadModel().activity));
   return engine.toReadModel().activity.action;
@@ -437,6 +513,189 @@ test("phase 2B content placement fixes eight reachable guarantees, boundary copp
   assert.deepEqual(resolveAmbientPlacementConflicts(collision).map((candidate) => candidate.prototypeId), ["wild_fiber"]);
   assert.deepEqual(resolveAmbientPlacementConflicts(collision, new Set(["0,0"])), [], "guarantee occupancy wins over ambient");
   assert.deepEqual(engine.toReadModel().knownTargetPrototypeIds, ["wild_fiber", "softwood_tree", "surface_stone"]);
+});
+
+test("phase 3A combat math, random purpose separation, and micro-HP regeneration are fixed", () => {
+  const encounter = "place:graymane-boar:guarantee:learning-a@0";
+  assert.equal(powSevenFifthsScaled(10), 25_118_864n);
+  assert.equal(opposedChancePpm(17, 10), 677_625);
+  assert.equal(opposedChancePpm(14, 10), 615_635);
+  assert.equal(deterministicPpmRoll("20260809", encounter, 0n, "detect"), 202_394);
+  assert.equal(deterministicPpmRoll("20260809", encounter, 0n, "hit:player"), 149_939);
+  assert.equal(deterministicRangeInclusive("20260809", encounter, 0n, "damage:player", 4, 6), 6);
+  assert.notEqual(
+    deterministicPpmRoll("20260809", encounter, 0n, "detect"),
+    deterministicPpmRoll("20260809", encounter, 0n, "hit:player"),
+  );
+  assert.deepEqual(applyNaturalRegen(50_000_000n, 100_000_000n, 0n, 10_000n), {
+    currentHpMicro: 51_000_000n,
+    regenNumerator: 0n,
+  });
+  assert.deepEqual(applyNaturalRegen(100_000_000n, 100_000_000n, 900_000n, 10_000n), {
+    currentHpMicro: 100_000_000n,
+    regenNumerator: 0n,
+  });
+});
+
+test("phase 3A enemy placement appends three deterministic guarantees and excludes the camp safe circle", () => {
+  const { engine } = createLandEngine();
+  assert.deepEqual(engine.enemyGuaranteePlacements, [
+    { placementId: "place:graymane-boar:guarantee:learning-a", archetypeId: "graymane_boar", source: "guarantee", tileX: "-10", tileY: "28", point: { x: "-9728", y: "29184" } },
+    { placementId: "place:graymane-boar:guarantee:learning-b", archetypeId: "graymane_boar", source: "guarantee", tileX: "-56", tileY: "38", point: { x: "-56832", y: "39424" } },
+    { placementId: "place:graymane-boar:guarantee:learning-c", archetypeId: "graymane_boar", source: "guarantee", tileX: "22", tileY: "33", point: { x: "23040", y: "34304" } },
+  ]);
+  assert.equal(ambientEnemyPlacementCandidate("20260809", { x: "512", y: "512" }, -1n, 0n), null);
+  const negative = ambientEnemyPlacementCandidate("20260809", { x: "512", y: "512" }, -2n, -2n);
+  assert.ok(negative);
+  assert.equal(contentCellForTile(BigInt(negative.tileX)), -2n);
+  assert.equal(contentCellForTile(BigInt(negative.tileY)), -2n);
+  assert.deepEqual(ENEMY_DEFINITIONS.graymane_boar.loot, {
+    entryId: "loot:graymane_boar:raw_hide:guaranteed", itemId: "raw_hide", quantity: 1,
+  });
+});
+
+test("Hunt is known-only and its fixed attack trace settles loot, Melee XP, count, and reload exactly once", () => {
+  const created = createLandEngine().engine;
+  assert.throws(() => created.setTask("cmd:0123456789abcdef:699", {
+    kind: "Hunt", archetypeId: "graymane_boar", requestedKills: 1,
+  }));
+  const { engine, definition } = restoreAtKnownEnemy(created);
+  engine.setTask("cmd:0123456789abcdef:700", { kind: "Hunt", archetypeId: "graymane_boar", requestedKills: 1 });
+  driveEngine(engine, () => new Uint8Array(4096).fill(3));
+  assert.equal(engine.toReadModel().combat?.triggeredByHunt, true);
+  const trace = [];
+  while (engine.toReadModel().combat !== null) {
+    advanceNextCombatEvent(engine);
+    const model = engine.toReadModel();
+    trace.push({
+      worldTimeMs: engine.snapshot().worldTimeMs.toString(),
+      playerHpMicro: engine.snapshot().playerHpMicro.toString(),
+      enemyHpMicro: engine.snapshot().combat?.enemyHpMicro.toString() ?? "dead",
+      lastAttack: model.combat?.lastAttack ?? null,
+    });
+  }
+  assert.deepEqual(trace, [
+    { worldTimeMs: "2500", playerHpMicro: "100000000", enemyHpMicro: "24000000", lastAttack: { actor: "player", hit: true, damage: 6 } },
+    { worldTimeMs: "3000", playerHpMicro: "100000000", enemyHpMicro: "24000000", lastAttack: { actor: "enemy", hit: false, damage: 0 } },
+    { worldTimeMs: "5000", playerHpMicro: "100000000", enemyHpMicro: "18000000", lastAttack: { actor: "player", hit: true, damage: 6 } },
+    { worldTimeMs: "6000", playerHpMicro: "97000000", enemyHpMicro: "18000000", lastAttack: { actor: "enemy", hit: true, damage: 3 } },
+    { worldTimeMs: "7500", playerHpMicro: "97150000", enemyHpMicro: "14000000", lastAttack: { actor: "player", hit: true, damage: 4 } },
+    { worldTimeMs: "9000", playerHpMicro: "97300000", enemyHpMicro: "14000000", lastAttack: { actor: "enemy", hit: false, damage: 0 } },
+    { worldTimeMs: "10000", playerHpMicro: "97400000", enemyHpMicro: "8000000", lastAttack: { actor: "player", hit: true, damage: 6 } },
+    { worldTimeMs: "12000", playerHpMicro: "97600000", enemyHpMicro: "8000000", lastAttack: { actor: "enemy", hit: false, damage: 0 } },
+    { worldTimeMs: "12500", playerHpMicro: "97650000", enemyHpMicro: "3000000", lastAttack: { actor: "player", hit: true, damage: 5 } },
+    { worldTimeMs: "15000", playerHpMicro: "97900000", enemyHpMicro: "dead", lastAttack: null },
+  ]);
+  assert.deepEqual({ rawHide: engine.snapshot().rawHide, meleeXp: engine.snapshot().meleeXp, task: engine.snapshot().task }, {
+    rawHide: 1,
+    meleeXp: 30,
+    task: { taskId: "task:0123456789abcdef:700", kind: "Hunt", archetypeId: "graymane_boar", requestedKills: 1, completedKills: 1, createdWorldTimeMs: "0" },
+  });
+  assert.equal(engine.toReadModel().map.enemyPlacements.find((placement) => placement.placementId === definition.placementId)?.state, "dead");
+  assert.equal(engine.needsImmediateCommit, true);
+  const reloaded = restoreFixtureEngine(engine);
+  reloaded.advanceBy(180_000n);
+  assert.deepEqual({ rawHide: reloaded.snapshot().rawHide, meleeXp: reloaded.snapshot().meleeXp, completed: reloaded.snapshot().task.completedKills }, {
+    rawHide: 1, meleeXp: 30, completed: 1,
+  });
+});
+
+test("non-Hunt motion settles one Stealth pass only after exit and does not reroll the same instance", () => {
+  const created = createLandEngine("1").engine;
+  const definition = created.enemyGuaranteePlacements[0];
+  const start = { x: (BigInt(definition.point.x) - 4_096n).toString(), y: definition.point.y };
+  const destination = { x: (BigInt(definition.point.x) + 4_096n).toString(), y: definition.point.y };
+  const { engine } = restoreAtKnownEnemy(created, 0, { position: start });
+  assert.equal(deterministicPpmRoll("1", `${definition.placementId}@0`, 0n, "detect"), 744_644);
+  engine.setTask("cmd:0123456789abcdef:710", { kind: "Explore", mode: "destination", destination });
+  for (let iteration = 0; iteration < 200 && engine.snapshot().stealthXp === 0; iteration += 1) {
+    driveEngine(engine, () => new Uint8Array(4096).fill(3));
+    const activity = engine.toReadModel().activity;
+    if (activity.state === "moving") engine.advanceBy(BigInt(activity.etaMs));
+  }
+  assert.equal(engine.toReadModel().combat, null);
+  assert.equal(engine.snapshot().stealthXp, 12);
+  assert.equal(engine.needsImmediateCommit, true);
+  engine.acknowledgeImmediateCommit();
+  driveEngine(engine, () => new Uint8Array(4096).fill(3));
+  const returnDestination = start;
+  engine.setTask("cmd:0123456789abcdef:711", { kind: "Explore", mode: "destination", destination: returnDestination });
+  for (let iteration = 0; iteration < 200 && engine.toReadModel().activity.reason?.code !== "TaskCompleted"; iteration += 1) {
+    driveEngine(engine, () => new Uint8Array(4096).fill(3));
+    const activity = engine.toReadModel().activity;
+    if (activity.state === "moving") engine.advanceBy(BigInt(activity.etaMs));
+  }
+  assert.equal(engine.snapshot().stealthXp, 12, "the same spawn cycle never rerolls or pays twice");
+});
+
+test("natural combat reloads and resumes the exact paused movement path from the encounter point", () => {
+  const created = createLandEngine().engine;
+  const definition = created.enemyGuaranteePlacements[0];
+  const start = { x: (BigInt(definition.point.x) - 4_096n).toString(), y: definition.point.y };
+  const destination = { x: (BigInt(definition.point.x) + 4_096n).toString(), y: definition.point.y };
+  const { engine } = restoreAtKnownEnemy(created, 0, { position: start });
+  engine.setTask("cmd:0123456789abcdef:715", { kind: "Explore", mode: "destination", destination });
+  driveEngine(engine, () => new Uint8Array(4096).fill(3));
+  assert.equal(engine.snapshot().activityState, "moving");
+  engine.advanceBy(BigInt(engine.toReadModel().activity.etaMs));
+  assert.ok(engine.toReadModel().combat, "the fixed encounter roll starts natural combat");
+
+  const encounterPosition = engine.snapshot().position;
+  const paused = engine.persistedState().combat?.paused;
+  assert.ok(paused?.movement);
+  assert.equal(paused.action, null);
+  assert.deepEqual(paused.movement.route, engine.snapshot().combat.paused.movement.route);
+
+  const reloaded = restoreFixtureEngine(engine);
+  assert.deepEqual(reloaded.snapshot().position, encounterPosition);
+  while (reloaded.toReadModel().combat !== null) advanceNextCombatEvent(reloaded);
+  assert.equal(reloaded.snapshot().activityState, "moving");
+  assert.deepEqual(reloaded.snapshot().position, encounterPosition, "combat time does not advance movement");
+  assert.deepEqual(reloaded.snapshot().route, paused.movement.route);
+  assert.equal(reloaded.snapshot().routeIndex, paused.movement.routeIndex);
+
+  reloaded.acknowledgeImmediateCommit();
+  for (let iteration = 0; iteration < 200 && reloaded.toReadModel().activity.reason?.code !== "TaskCompleted"; iteration += 1) {
+    driveEngine(reloaded, () => new Uint8Array(4096).fill(3));
+    const activity = reloaded.toReadModel().activity;
+    if (activity.state === "moving") reloaded.advanceBy(BigInt(activity.etaMs));
+    if (reloaded.needsImmediateCommit) reloaded.acknowledgeImmediateCommit();
+  }
+  assert.deepEqual(reloaded.snapshot().position, destination);
+  assert.equal(reloaded.toReadModel().activity.reason?.code, "TaskCompleted");
+});
+
+test("death preserves Hunt, waits exactly 60s, respawns at the death point, and grants 5s non-Hunt grace", () => {
+  const created = createLandEngine().engine;
+  const { engine, definition } = restoreAtKnownEnemy(created, 0, { playerHpMicro: "1000000" });
+  engine.setTask("cmd:0123456789abcdef:720", { kind: "Hunt", archetypeId: "graymane_boar", requestedKills: null });
+  driveEngine(engine, () => new Uint8Array(4096).fill(3));
+  assert.throws(() => engine.unequipSlot("axe"));
+  while (engine.toReadModel().respawn === null) advanceNextCombatEvent(engine);
+  const death = engine.snapshot();
+  assert.equal(death.task?.kind, "Hunt");
+  assert.equal(death.deaths, 1);
+  assert.equal(death.playerHpMicro, 0n);
+  assert.deepEqual(death.respawn?.deathPosition, definition.point);
+  assert.equal(engine.toReadModel().respawn?.remainingMs, "60000");
+  const enemy = engine.toReadModel().map.enemyPlacements.find((placement) => placement.placementId === definition.placementId);
+  assert.equal(enemy?.state, "active", "the killing enemy resets instead of dying");
+  engine.acknowledgeImmediateCommit();
+  engine.advanceBy(59_999n);
+  assert.equal(engine.toReadModel().player?.state, "dead");
+  assert.equal(engine.toReadModel().respawn?.remainingMs, "1");
+  engine.cancelTask();
+  engine.advanceBy(1n);
+  assert.equal(engine.toReadModel().player?.state, "alive");
+  assert.equal(engine.snapshot().playerHpMicro, 100_000_000n);
+  assert.deepEqual(engine.snapshot().position, definition.point);
+  assert.equal(engine.snapshot().respawns, 1);
+  assert.equal(engine.toReadModel().player?.revivalGraceRemainingMs, "5000");
+  engine.acknowledgeImmediateCommit();
+  engine.advanceBy(4_999n);
+  assert.equal(engine.toReadModel().player?.revivalGraceRemainingMs, "1");
+  engine.advanceBy(1n);
+  assert.equal(engine.toReadModel().player?.revivalGraceRemainingMs, null);
 });
 
 test("phase 2C recipe table and crafting duration are closed and stable", () => {
@@ -564,12 +823,17 @@ test("one 6000ms gather action atomically depletes the node and settles fiber, X
   reloaded.restore({
     seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: saved.position, campAnchor: saved.campAnchor,
     totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: saved.miningXp, craftingXp: saved.craftingXp,
-    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre, rope: saved.rope,
+    meleeXp: saved.meleeXp, stealthXp: saved.stealthXp,
+    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre, rope: saved.rope, rawHide: saved.rawHide,
     wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, reinforcedAxe: saved.reinforcedAxe, reinforcedPickaxe: saved.reinforcedPickaxe,
     equipment: saved.equipment, task: saved.task,
     executionState: saved.execution.state, routePurpose: saved.execution.routePurpose,
     targetPlacementId: saved.execution.targetPlacementId, action: saved.execution.action,
-    waitingReason: saved.execution.waitingReason, worldChunks: saved.worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
+    waitingReason: saved.execution.waitingReason, worldChunks: saved.worldChunks,
+    playerHpMicro: saved.playerHpMicro, playerMaxHpMicro: saved.playerMaxHpMicro, hpRegenNumerator: saved.hpRegenNumerator,
+    combat: saved.combat, respawn: saved.respawn, revivalGraceUntilWorldTimeMs: saved.revivalGraceUntilWorldTimeMs,
+    targetKills: saved.targetKills, otherKills: saved.otherKills, deaths: saved.deaths, respawns: saved.respawns,
+    nextEventOrdinal: saved.nextEventOrdinal,
   });
   driveEngine(reloaded, () => new Uint8Array(4096).fill(3));
   assert.equal(engine.advanceBy(5999n), 0n);
@@ -638,9 +902,9 @@ test("mining 5 can claim and settle the guaranteed boundary copper deposit", () 
     ...copperDefinition, availability: "active", spawnCycle: 0, depletedWorldTimeMs: null, nextAvailableWorldTimeMs: null,
   };
   const chunkKey = `${BigInt(copperDefinition.tileX) / 64n},${BigInt(copperDefinition.tileY) / 64n}`;
-  const worldChunks = saved.worldChunks.map((chunk) => ({ ...chunk, knownPlacements: [...chunk.knownPlacements] }));
+  const worldChunks = saved.worldChunks.map((chunk) => ({ ...chunk, knownPlacements: [...chunk.knownPlacements], knownEnemyPlacements: [...chunk.knownEnemyPlacements] }));
   const copperChunk = worldChunks.find((chunk) => chunk.chunkKey === chunkKey);
-  if (copperChunk === undefined) worldChunks.push({ chunkKey, revealedBase64: Buffer.alloc(512, 255).toString("base64"), knownPlacements: [copperPlacement] });
+  if (copperChunk === undefined) worldChunks.push({ chunkKey, revealedBase64: Buffer.alloc(512, 255).toString("base64"), knownPlacements: [copperPlacement], knownEnemyPlacements: [] });
   else {
     copperChunk.revealedBase64 = Buffer.alloc(512, 255).toString("base64");
     copperChunk.knownPlacements.push(copperPlacement);
@@ -650,11 +914,16 @@ test("mining 5 can claim and settle the guaranteed boundary copper deposit", () 
   engine.restore({
     seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: copperDefinition.point, campAnchor: saved.campAnchor,
     totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: xpAtLevelStart(5), craftingXp: saved.craftingXp,
-    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre, rope: saved.rope,
+    meleeXp: saved.meleeXp, stealthXp: saved.stealthXp,
+    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre, rope: saved.rope, rawHide: saved.rawHide,
     wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, reinforcedAxe: saved.reinforcedAxe, reinforcedPickaxe: saved.reinforcedPickaxe,
     equipment: saved.equipment, task: null,
     executionState: "idle", routePurpose: null, targetPlacementId: null, action: null, waitingReason: null,
-    worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
+    worldChunks,
+    playerHpMicro: saved.playerHpMicro, playerMaxHpMicro: saved.playerMaxHpMicro, hpRegenNumerator: saved.hpRegenNumerator,
+    combat: saved.combat, respawn: saved.respawn, revivalGraceUntilWorldTimeMs: saved.revivalGraceUntilWorldTimeMs,
+    targetKills: saved.targetKills, otherKills: saved.otherKills, deaths: saved.deaths, respawns: saved.respawns,
+    nextEventOrdinal: saved.nextEventOrdinal,
   });
   driveEngine(engine, () => new Uint8Array(4096).fill(3));
   engine.setTask("cmd:0123456789abcdef:102", { kind: "Mine", targetPrototypeId: "shallow_copper_deposit", quantity: 1 });

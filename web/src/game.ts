@@ -2,7 +2,7 @@ import "./game.css";
 import { Camera } from "./camera.ts";
 import { ChunkManager } from "./chunk-manager.ts";
 import { GameplayClient } from "./gameplay-client.ts";
-import type { ActivityReason, GameplayReadModelV1, WorldPoint } from "./gameplay/contracts.ts";
+import type { ActivityReason, GameplayReadModelV2, WorldPoint } from "./gameplay/contracts.ts";
 import { RECIPE_DEFINITIONS, RESOURCE_DEFINITIONS, RESOURCE_PROTOTYPE_ORDER, type RecipeId, type ResourcePrototypeId, type ResourceTaskKind, type ToolItemId } from "./gameplay/content.ts";
 import { base64ToFogBits } from "./gameplay/fog.ts";
 import { Renderer } from "./renderer.ts";
@@ -42,6 +42,12 @@ const gatherQuantity = required<HTMLInputElement>("#gather-quantity");
 const gatherFiniteButton = required<HTMLButtonElement>("#gather-finite");
 const gatherContinuousButton = required<HTMLButtonElement>("#gather-continuous");
 const gatherProgress = required<HTMLElement>("#gather-progress");
+const huntControls = required<HTMLElement>("#hunt-controls");
+const huntUnknown = required<HTMLElement>("#hunt-unknown");
+const huntQuantity = required<HTMLInputElement>("#hunt-quantity");
+const huntFiniteButton = required<HTMLButtonElement>("#hunt-finite");
+const huntContinuousButton = required<HTMLButtonElement>("#hunt-continuous");
+const huntProgress = required<HTMLElement>("#hunt-progress");
 const produceRecipe = required<HTMLSelectElement>("#produce-recipe");
 const produceQuantity = required<HTMLInputElement>("#produce-quantity");
 const produceFiniteButton = required<HTMLButtonElement>("#produce-finite");
@@ -60,6 +66,12 @@ const miningSpeed = required<HTMLElement>("#mining-speed");
 const craftingLevel = required<HTMLElement>("#crafting-level");
 const craftingXp = required<HTMLElement>("#crafting-xp");
 const craftingSpeed = required<HTMLElement>("#crafting-speed");
+const meleeLevel = required<HTMLElement>("#melee-level");
+const meleeXp = required<HTMLElement>("#melee-xp");
+const meleeSpeed = required<HTMLElement>("#melee-speed");
+const stealthLevel = required<HTMLElement>("#stealth-level");
+const stealthXp = required<HTMLElement>("#stealth-xp");
+const stealthSpeed = required<HTMLElement>("#stealth-speed");
 const taskWarning = required<HTMLElement>("#task-warning");
 const fiberQuantity = required<HTMLElement>("#fiber-quantity");
 const materialList = required<HTMLElement>("#material-list");
@@ -72,6 +84,16 @@ const axeChoice = required<HTMLSelectElement>("#axe-choice");
 const pickaxeChoice = required<HTMLSelectElement>("#pickaxe-choice");
 const axeDetail = required<HTMLElement>("#axe-detail");
 const pickaxeDetail = required<HTMLElement>("#pickaxe-detail");
+const weaponEquipped = required<HTMLElement>("#weapon-equipped");
+const weaponDetail = required<HTMLElement>("#weapon-detail");
+const combatPanel = required<HTMLElement>("#combat-panel");
+const combatTrigger = required<HTMLElement>("#combat-trigger");
+const combatPlayerHp = required<HTMLElement>("#combat-player-hp");
+const combatEnemyName = required<HTMLElement>("#combat-enemy-name");
+const combatEnemyHp = required<HTMLElement>("#combat-enemy-hp");
+const combatDetail = required<HTMLElement>("#combat-detail");
+const enemyCount = required<HTMLElement>("#enemy-count");
+const enemyList = required<HTMLUListElement>("#enemy-list");
 const resourceCount = required<HTMLElement>("#resource-count");
 const resourceList = required<HTMLUListElement>("#resource-list");
 const bottomIntent = required<HTMLElement>("#bottom-intent");
@@ -111,7 +133,7 @@ const camera = new Camera(canvas);
 const client = new GameplayClient(chunks);
 renderer.setGridVisible(false);
 
-let readModel: GameplayReadModelV1 | null = null;
+let readModel: GameplayReadModelV2 | null = null;
 let selectedDestination: WorldPoint | null = null;
 let choosingDestination = false;
 let commandBusy = false;
@@ -149,7 +171,7 @@ function reasonLabel(reason: ActivityReason | null): string | null {
   }
 }
 
-function activityLabel(model: GameplayReadModelV1): string {
+function activityLabel(model: GameplayReadModelV2): string {
   switch (model.activity.state) {
     case "idle": return "空闲";
     case "planning": return model.activity.phase === "acquiring_target" ? "索取资源节点" : model.activity.phase === "auto_exploring" ? "自动探索" : "规划路线";
@@ -164,8 +186,11 @@ function activityLabel(model: GameplayReadModelV1): string {
       if (model.activity.reason?.code !== "TaskCompleted") return reasonLabel(model.activity.reason) ?? "等待中";
       if (model.task?.kind === "Explore") return model.task.mode === "destination" ? "已抵达目的地" : "探索完成";
       if (model.task?.kind === "Produce") return "生产完成";
+      if (model.task?.kind === "Hunt") return "狩猎完成";
       return model.task === null ? "任务完成" : `${resourceTaskLabel(model.task.kind)}完成`;
     }
+    case "combat": return `战斗 · ${model.combat?.displayName ?? "敌人"}`;
+    case "respawning": return `等待复活 · ${formatDuration(model.respawn?.remainingMs ?? "0")}`;
     case "paused": return "已暂停";
   }
 }
@@ -182,6 +207,12 @@ function formatDuration(decimalMs: string): string {
   return `${hours / 24n} 天 ${hours % 24n} 小时`;
 }
 
+function formatHp(microHp: string): string {
+  const value = BigInt(microHp);
+  const tenths = (value + 50_000n) / 100_000n;
+  return `${tenths / 10n}.${tenths % 10n}`;
+}
+
 function tileOf(point: WorldPoint): Readonly<{ x: bigint; y: bigint }> {
   const divisor = NAV_UNITS_PER_TILE;
   const floor = (value: bigint): bigint => {
@@ -191,11 +222,12 @@ function tileOf(point: WorldPoint): Readonly<{ x: bigint; y: bigint }> {
   return { x: floor(BigInt(point.x)), y: floor(BigInt(point.y)) };
 }
 
-function phaseLabel(model: GameplayReadModelV1): string {
-  const labels: Record<GameplayReadModelV1["activity"]["phase"], string> = {
+function phaseLabel(model: GameplayReadModelV2): string {
+  const labels: Record<GameplayReadModelV2["activity"]["phase"], string> = {
     idle: "空闲", exploring: "探索", acquiring_target: "索取最近节点", moving_to_target: "前往采集点",
     resource_action: "资源行动", auto_exploring: "为任务自动探索", waiting: "待机", paused: "暂停",
     production_action: "生产",
+    combat: "连续战斗", waiting_respawn: "等待复活",
   };
   return labels[model.activity.phase];
 }
@@ -204,7 +236,7 @@ function resourceTaskLabel(kind: ResourceTaskKind): string {
   return kind === "Gather" ? "采集" : kind === "Woodcut" ? "伐木" : "采矿";
 }
 
-function syncTaskWarning(model: GameplayReadModelV1): void {
+function syncTaskWarning(model: GameplayReadModelV2): void {
   const prototypeId = gatherTarget.value as ResourcePrototypeId;
   const placement = model.map.resourcePlacements.find((candidate) => candidate.prototypeId === prototypeId);
   const requirement = placement?.requiredTool ?? null;
@@ -217,7 +249,7 @@ function syncTaskWarning(model: GameplayReadModelV1): void {
   taskWarning.textContent = `当前未装备${requirement.slot === "axe" ? "斧" : "镐"}。任务会保留并等待工具。`;
 }
 
-function syncSkill(label: string, skill: NonNullable<GameplayReadModelV1["skills"]>["gathering"] | undefined, levelNode: HTMLElement, xpNode: HTMLElement, speedNode: HTMLElement): void {
+function syncSkill(label: string, skill: NonNullable<GameplayReadModelV2["skills"]>["gathering"] | undefined, levelNode: HTMLElement, xpNode: HTMLElement, speedNode: HTMLElement): void {
   if (skill === undefined) return;
   levelNode.textContent = `${label} Lv.${skill.level}`;
   xpNode.textContent = skill.nextLevelXp === null ? `${skill.totalXp.toLocaleString()} XP · 满级`
@@ -225,7 +257,7 @@ function syncSkill(label: string, skill: NonNullable<GameplayReadModelV1["skills
   speedNode.textContent = `${skill.skillSpeedBps} bps`;
 }
 
-function inventoryRows(items: NonNullable<GameplayReadModelV1["inventory"]>["items"], empty: string): readonly HTMLElement[] {
+function inventoryRows(items: NonNullable<GameplayReadModelV2["inventory"]>["items"], empty: string): readonly HTMLElement[] {
   if (items.length === 0) {
     const node = document.createElement("span");
     node.className = "empty-copy";
@@ -244,7 +276,7 @@ function inventoryRows(items: NonNullable<GameplayReadModelV1["inventory"]>["ite
   });
 }
 
-function syncToolChoice(model: GameplayReadModelV1, slot: "axe" | "pickaxe", select: HTMLSelectElement, detail: HTMLElement, button: HTMLButtonElement): void {
+function syncToolChoice(model: GameplayReadModelV2, slot: "axe" | "pickaxe", select: HTMLSelectElement, detail: HTMLElement, button: HTMLButtonElement): void {
   const previous = select.value;
   const candidates = model.toolCandidates.filter((candidate) => candidate.slot === slot && (candidate.inventoryQuantity > 0 || candidate.equipped));
   const options = candidates.map((candidate) => {
@@ -267,7 +299,7 @@ function syncToolChoice(model: GameplayReadModelV1, slot: "axe" | "pickaxe", sel
     : `tier ${selected.tier} · 速度 +${selected.speedBps} bps · 需${selected.requiredSkillId === "woodcutting" ? "伐木" : "采矿"} ${selected.requiredLevel}`;
 }
 
-function syncGatheringUi(model: GameplayReadModelV1): void {
+function syncGatheringUi(model: GameplayReadModelV2): void {
   const previousTarget = gatherTarget.value;
   const summaries = new Map(model.map.resourcePlacements.map((placement) => [placement.prototypeId, placement]));
   const options = RESOURCE_PROTOTYPE_ORDER.filter((prototypeId) => model.knownTargetPrototypeIds.includes(prototypeId)).map((prototypeId) => {
@@ -286,12 +318,20 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
   gatherUnknown.hidden = known;
   if (known) updateResourceButtons();
   const task = model.task;
-  const isResourceTask = task !== null && task.kind !== "Explore" && task.kind !== "Produce";
+  const isResourceTask = task !== null && (task.kind === "Gather" || task.kind === "Woodcut" || task.kind === "Mine");
   gatherProgress.textContent = isResourceTask
     ? task.quantity === null ? `${task.completedQuantity} · 持续` : `${task.completedQuantity} / ${task.quantity}`
     : task?.kind === "Produce"
       ? `生产 ${task.requestedQuantity === null ? `${task.completedQuantity} · 持续` : `${task.completedQuantity} / ${task.requestedQuantity}`}`
       : "未设置";
+
+  const huntKnown = model.knownEnemyArchetypeIds.includes("graymane_boar");
+  huntControls.hidden = !huntKnown;
+  huntUnknown.hidden = huntKnown;
+  const huntTask = task?.kind === "Hunt" ? task : null;
+  huntProgress.textContent = huntTask === null ? huntKnown ? "可狩猎灰鬃野猪" : "尚未发现目标"
+    : huntTask.requestedKills === null ? `${huntTask.completedKills} · 持续`
+      : `${huntTask.completedKills} / ${huntTask.requestedKills}`;
 
   const previousRecipe = produceRecipe.value;
   const recipeOptions = model.recipes.map((recipe) => {
@@ -313,12 +353,18 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
   syncSkill("伐木", model.skills?.woodcutting, woodcuttingLevel, woodcuttingXp, woodcuttingSpeed);
   syncSkill("采矿", model.skills?.mining, miningLevel, miningXp, miningSpeed);
   syncSkill("工艺", model.skills?.crafting, craftingLevel, craftingXp, craftingSpeed);
+  syncSkill("近战", model.skills?.melee, meleeLevel, meleeXp, meleeSpeed);
+  syncSkill("潜行", model.skills?.stealth, stealthLevel, stealthXp, stealthSpeed);
   fiberQuantity.textContent = String(model.inventory?.items.find((item) => item.itemId === "fiber")?.quantity ?? 0);
   const inventoryItems = model.inventory?.items ?? [];
   materialList.replaceChildren(...inventoryRows(inventoryItems.filter((item) => item.category === "material"), "暂无材料"));
   toolInventoryList.replaceChildren(...inventoryRows(inventoryItems.filter((item) => item.category === "equipment"), "工具均已装备"));
   const axe = model.equipment?.axe ?? null;
   const pickaxe = model.equipment?.pickaxe ?? null;
+  const weapon = model.equipment?.weapon ?? null;
+  weaponEquipped.textContent = weapon?.displayName ?? "—";
+  weaponDetail.textContent = weapon === null ? "—"
+    : `${weapon.damageMin}–${weapon.damageMax} 伤害 · 命中 +${weapon.accuracyBonus} · ${formatDuration(weapon.attackIntervalMs)}/击`;
   axeEquipped.textContent = axe?.displayName ?? "未装备";
   pickaxeEquipped.textContent = pickaxe?.displayName ?? "未装备";
   syncToolChoice(model, "axe", axeChoice, axeDetail, axeToggle);
@@ -340,8 +386,36 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
   }));
   syncTaskWarning(model);
 
+  enemyCount.textContent = String(model.map.enemyPlacements.length);
+  enemyList.replaceChildren(...model.map.enemyPlacements.map((placement) => {
+    const item = document.createElement("li");
+    item.dataset.state = placement.state;
+    const dot = document.createElement("span");
+    const body = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = placement.displayName;
+    const status = document.createElement("small");
+    status.textContent = placement.state === "active" ? "存活" : placement.state === "dead" ? "已击杀"
+      : `重生 ${formatDuration(placement.respawnRemainingMs ?? "0")}`;
+    body.append(name, status); item.append(dot, body);
+    return item;
+  }));
+
+  const combat = model.combat;
+  combatPanel.hidden = combat === null;
+  if (combat !== null) {
+    combatTrigger.textContent = combat.triggeredByHunt ? "定向狩猎" : "自然遭遇";
+    combatPlayerHp.textContent = `${formatHp(combat.playerHpMicro)} / ${formatHp(combat.playerMaxHpMicro)}`;
+    combatEnemyName.textContent = combat.displayName;
+    combatEnemyHp.textContent = `${formatHp(combat.enemyHpMicro)} / ${formatHp(combat.enemyMaxHpMicro)}`;
+    const last = combat.lastAttack === null ? "尚未攻击"
+      : `${combat.lastAttack.actor === "player" ? "玩家" : combat.displayName}${combat.lastAttack.hit ? `造成 ${combat.lastAttack.damage} 伤害` : "未命中"}`;
+    combatDetail.textContent = `玩家下次 ${formatDuration(combat.playerNextAttackRemainingMs)} · 敌人下次 ${formatDuration(combat.enemyNextAttackRemainingMs)} · ${last}`;
+  }
+
   bottomIntent.textContent = task === null ? "无任务" : task.kind === "Produce"
     ? `生产${RECIPE_DEFINITIONS[task.recipeId].displayName} · ${task.requestedQuantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.requestedQuantity}`}`
+    : task.kind === "Hunt"
+      ? `狩猎灰鬃野猪 · ${task.requestedKills === null ? `${task.completedKills} / 持续` : `${task.completedKills} / ${task.requestedKills}`}`
     : task.kind !== "Explore"
       ? `${resourceTaskLabel(task.kind)}${RESOURCE_DEFINITIONS[task.targetPrototypeId].displayName} · ${task.quantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.quantity}`}`
       : task.mode === "continuous" ? "持续探索" : "目的地探索";
@@ -351,7 +425,7 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
     : model.activity.etaMs !== null ? `移动剩余 ${formatDuration(model.activity.etaMs)}` : reasonLabel(model.activity.reason) ?? "—";
 }
 
-function syncProductUi(model: GameplayReadModelV1): void {
+function syncProductUi(model: GameplayReadModelV2): void {
   readModel = model;
   const playable = model.player !== null;
   onboarding.hidden = playable;
@@ -369,7 +443,7 @@ function syncProductUi(model: GameplayReadModelV1): void {
     const position = model.player!.position;
     const tile = tileOf(position);
     playerPosition.textContent = `tile ${tile.x}, ${tile.y}`;
-    hpLabel.textContent = `${model.player!.hp.current} / ${model.player!.hp.max}`;
+    hpLabel.textContent = `${formatHp(model.player!.hp.currentMicro)} / ${formatHp(model.player!.hp.maxMicro)}`;
     activityState.textContent = activityLabel(model);
     if (centeredEpoch !== model.gameplayEpoch) {
       camera.x = Number(BigInt(position.x)) / Number(NAV_UNITS_PER_TILE) * renderer.tilePixels;
@@ -400,7 +474,7 @@ function syncProductUi(model: GameplayReadModelV1): void {
   cancelButton.hidden = model.task === null;
   syncGatheringUi(model);
 
-  const saveLabels: Record<GameplayReadModelV1["save"]["state"], string> = {
+  const saveLabels: Record<GameplayReadModelV2["save"]["state"], string> = {
     none: "尚未建档", saving: "正在保存", saved: `已保存 · r${model.save.revision}`,
     error: "保存失败", incompatible: "版本不兼容", active_in_other_tab: "其他标签页运行中",
   };
@@ -421,7 +495,8 @@ function syncProductUi(model: GameplayReadModelV1): void {
       const discarded = BigInt(model.offlineReport.discardedDurationMs);
       const skillGains = model.offlineReport.skillXpGains.map((gain) => `${gain.displayName} XP +${gain.xp}`).join("，");
       const itemDeltas = model.offlineReport.itemDeltas.map((delta) => `${delta.displayName} ${delta.quantity > 0 ? "+" : ""}${delta.quantity}`).join("，");
-      offlineSummary.textContent = `${[skillGains, itemDeltas, `揭露 ${model.offlineReport.revealedTiles} 格`].filter(Boolean).join("，")}。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
+      const combatSummary = `目标击杀 ${model.offlineReport.targetKills}，其他击杀 ${model.offlineReport.otherKills}，死亡 ${model.offlineReport.deaths}，复活 ${model.offlineReport.respawns}，最终生命 ${formatHp(model.offlineReport.finalHpMicro)}`;
+      offlineSummary.textContent = `${[skillGains, itemDeltas, `揭露 ${model.offlineReport.revealedTiles} 格`, combatSummary].filter(Boolean).join("，")}。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
     }
   }
 }
@@ -430,7 +505,7 @@ client.subscribe(syncProductUi);
 
 function setBusy(busy: boolean): void {
   commandBusy = busy;
-  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, produceFiniteButton, produceContinuousButton, axeToggle, pickaxeToggle, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
+  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, huntFiniteButton, huntContinuousButton, produceFiniteButton, produceContinuousButton, axeToggle, pickaxeToggle, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
     button.disabled = busy;
   }
   if (!busy && readModel !== null) {
@@ -528,6 +603,10 @@ gatherQuantity.addEventListener("input", () => {
   updateResourceButtons();
 });
 gatherTarget.addEventListener("change", updateResourceButtons);
+huntQuantity.addEventListener("input", () => {
+  const text = huntQuantity.value.trim();
+  huntFiniteButton.textContent = /^\d+$/.test(text) ? `狩猎 ×${text}` : "设置狩猎";
+});
 produceQuantity.addEventListener("input", () => updateProductionButtons());
 produceRecipe.addEventListener("change", () => updateProductionButtons());
 
@@ -551,6 +630,25 @@ gatherContinuousButton.addEventListener("click", () => {
   void runCommand(
     () => setSelectedResourceTask(null),
     `已开始持续${resourceTaskLabel(RESOURCE_DEFINITIONS[gatherTarget.value as ResourcePrototypeId].taskKind)}`,
+  );
+});
+
+huntFiniteButton.addEventListener("click", () => {
+  const requested = Number(huntQuantity.value.trim());
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    showToast("狩猎击杀数必须是正安全整数", true);
+    return;
+  }
+  void runCommand(
+    () => client.command({ type: "SetTask", task: { kind: "Hunt", archetypeId: "graymane_boar", requestedKills: requested } }),
+    `已设置狩猎灰鬃野猪 ×${requested}`,
+  );
+});
+
+huntContinuousButton.addEventListener("click", () => {
+  void runCommand(
+    () => client.command({ type: "SetTask", task: { kind: "Hunt", archetypeId: "graymane_boar", requestedKills: null } }),
+    "已开始持续狩猎灰鬃野猪",
   );
 });
 
@@ -778,6 +876,24 @@ function drawGameplayOverlay(): void {
     context.lineWidth = placement.placementId === model.activity.targetPlacementId ? 3 : 2;
     context.beginPath();
     context.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+    context.fill();
+    context.stroke();
+    context.restore();
+  }
+
+  for (const placement of model.map.enemyPlacements) {
+    const world = pointWorldPixels(placement.point);
+    const screen = worldToScreen(world.x, world.y);
+    const targeted = placement.placementId === model.activity.targetPlacementId || placement.placementId === model.combat?.placementId;
+    context.save();
+    context.fillStyle = placement.state === "active" ? "#d48366" : placement.state === "dead" ? "#65736d" : "#d3a85e";
+    context.strokeStyle = targeted ? "#fff0b5" : "rgba(5, 15, 11, .9)";
+    context.lineWidth = targeted ? 3 : 2;
+    context.beginPath();
+    context.moveTo(screen.x, screen.y - 8);
+    context.lineTo(screen.x + 8, screen.y + 7);
+    context.lineTo(screen.x - 8, screen.y + 7);
+    context.closePath();
     context.fill();
     context.stroke();
     context.restore();

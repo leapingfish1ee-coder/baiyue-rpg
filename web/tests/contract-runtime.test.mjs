@@ -14,7 +14,7 @@ const diagnosticId = "diag:protocol:invalid-message:0123456789abcdef";
 const point = { x: "512", y: "512" };
 
 const readModel = {
-  protocolVersion: 1,
+  protocolVersion: 2,
   readModelRevision: 0,
   gameplayEpoch: 0,
   startup: "new_world",
@@ -29,7 +29,10 @@ const readModel = {
   toolCandidates: [],
   recipes: [],
   knownTargetPrototypeIds: [],
-  map: { revealedChunks: [], resourcePlacements: [], selectedDestination: null },
+  knownEnemyArchetypeIds: [],
+  combat: null,
+  respawn: null,
+  map: { revealedChunks: [], resourcePlacements: [], enemyPlacements: [], selectedDestination: null },
   save: { state: "none", revision: 0, committedWallClockMs: null, localOnly: true, evictionWarning: false, lastError: null },
   offlineReport: null,
 };
@@ -49,28 +52,28 @@ function assertExactBranches(validator, branches) {
 
 test("every main-to-worker branch is exact and validates IDs, bounds, equality, and transferables", () => {
   const branches = [
-    { type: "initialize", protocolVersion: 1, requestId, generatorVersion: 3, wallClockMs: 1 },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "CreateWorld", commandId, seed: "20260809", seedSource: "manual", wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Explore", mode: "continuous", destination: null }, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Explore", mode: "destination", destination: point }, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: 10 }, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Woodcut", targetPrototypeId: "softwood_tree", quantity: 2 }, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Mine", targetPrototypeId: "surface_stone", quantity: 1 }, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Produce", recipeId: "rope", requestedQuantity: 1 }, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "EquipItem", commandId, itemId: "worn_axe", wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "UnequipSlot", commandId, slot: "pickaxe", wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "CancelTask", commandId, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "ExportSave", commandId, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "ImportSave", commandId, backupUtf8: new ArrayBuffer(2), confirmed: true, wallClockMs: 1 } },
-    { type: "command", protocolVersion: 1, requestId, command: { type: "ResetSave", commandId, confirmed: true, wallClockMs: 1 } },
-    { type: "terrain-result", protocolVersion: 1, terrainRequestId: "terrain:0:0", gameplayEpoch: 0, chunkKey: "-1,2", chunkX: "-1", chunkY: "2", generatorVersion: 3, baseTerrain: new ArrayBuffer(4096) },
-    { type: "terrain-error", protocolVersion: 1, terrainRequestId: "terrain:0:0", gameplayEpoch: 0, code: "terrain/payload_invalid", transient: false, diagnosticId },
-    { type: "flush", protocolVersion: 1, requestId, wallClockMs: 1 },
-    { type: "shutdown", protocolVersion: 1, requestId },
+    { type: "initialize", protocolVersion: 2, requestId, generatorVersion: 3, wallClockMs: 1 },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "CreateWorld", commandId, seed: "20260809", seedSource: "manual", wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "SetTask", commandId, task: { kind: "Explore", mode: "continuous", destination: null }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "SetTask", commandId, task: { kind: "Explore", mode: "destination", destination: point }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "SetTask", commandId, task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: 10 }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "SetTask", commandId, task: { kind: "Woodcut", targetPrototypeId: "softwood_tree", quantity: 2 }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "SetTask", commandId, task: { kind: "Mine", targetPrototypeId: "surface_stone", quantity: 1 }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "SetTask", commandId, task: { kind: "Produce", recipeId: "rope", requestedQuantity: 1 }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "EquipItem", commandId, itemId: "worn_axe", wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "UnequipSlot", commandId, slot: "pickaxe", wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "CancelTask", commandId, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "ExportSave", commandId, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "ImportSave", commandId, backupUtf8: new ArrayBuffer(2), confirmed: true, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 2, requestId, command: { type: "ResetSave", commandId, confirmed: true, wallClockMs: 1 } },
+    { type: "terrain-result", protocolVersion: 2, terrainRequestId: "terrain:0:0", gameplayEpoch: 0, chunkKey: "-1,2", chunkX: "-1", chunkY: "2", generatorVersion: 3, baseTerrain: new ArrayBuffer(4096) },
+    { type: "terrain-error", protocolVersion: 2, terrainRequestId: "terrain:0:0", gameplayEpoch: 0, code: "terrain/payload_invalid", transient: false, diagnosticId },
+    { type: "flush", protocolVersion: 2, requestId, wallClockMs: 1 },
+    { type: "shutdown", protocolVersion: 2, requestId },
   ];
   assertExactBranches(isMainToGameplayWorker, branches);
 
-  assert.equal(isMainToGameplayWorker({ ...branches[0], protocolVersion: 2 }), false);
+  assert.equal(isMainToGameplayWorker({ ...branches[0], protocolVersion: 1 }), false);
   assert.equal(isMainToGameplayWorker({ ...branches[0], requestId: "req:0123456789abcdef:9007199254740992" }), false);
   const terrainResult = branches.find((branch) => branch.type === "terrain-result");
   const terrainError = branches.find((branch) => branch.type === "terrain-error");
@@ -96,17 +99,17 @@ test("every worker-to-main branch is exact and uses closed error/read-model shap
   const commandError = { code: "command/id_conflict", params: { commandId }, diagnosticId: null };
   const protocolError = { code: "protocol/invalid_message", params: null, diagnosticId };
   const branches = [
-    { type: "worker-ready", protocolVersion: 1 },
-    { type: "request-result", protocolVersion: 1, requestId, operation: "initialize", status: "accepted", readModelRevision: 0, saveRevision: 0, error: null },
-    { type: "request-result", protocolVersion: 1, requestId, operation: "flush", status: "rejected", readModelRevision: 0, saveRevision: 0, error: lifecycleError },
-    { type: "protocol-error", protocolVersion: 1, requestId: null, error: protocolError, readModelRevision: 0, saveRevision: 0 },
-    { type: "terrain-request", protocolVersion: 1, terrainRequestId: "terrain:0:0", gameplayEpoch: 0, readModelRevision: 0, seed: "20260809", chunkKey: "-1,2", chunkX: "-1", chunkY: "2" },
-    { type: "read-model", protocolVersion: 1, readModel },
-    { type: "command-result", protocolVersion: 1, requestId, commandId, status: "accepted", readModelRevision: 0, saveRevision: 0, error: null },
-    { type: "command-result", protocolVersion: 1, requestId, commandId, status: "rejected", readModelRevision: 0, saveRevision: 0, error: commandError },
-    { type: "offline-progress", protocolVersion: 1, claimId: "claim:1:2", processedDurationMs: "1", creditedDurationMs: "2", sliceMaxMs: 0.25 },
-    { type: "export-ready", protocolVersion: 1, requestId, commandId, saveRevision: 1, filename: "baiyue-rpg-save-r1.json", backupUtf8: new ArrayBuffer(2) },
-    { type: "fatal", protocolVersion: 1, error: lifecycleError, readModelRevision: 0, saveRevision: 0 },
+    { type: "worker-ready", protocolVersion: 2 },
+    { type: "request-result", protocolVersion: 2, requestId, operation: "initialize", status: "accepted", readModelRevision: 0, saveRevision: 0, error: null },
+    { type: "request-result", protocolVersion: 2, requestId, operation: "flush", status: "rejected", readModelRevision: 0, saveRevision: 0, error: lifecycleError },
+    { type: "protocol-error", protocolVersion: 2, requestId: null, error: protocolError, readModelRevision: 0, saveRevision: 0 },
+    { type: "terrain-request", protocolVersion: 2, terrainRequestId: "terrain:0:0", gameplayEpoch: 0, readModelRevision: 0, seed: "20260809", chunkKey: "-1,2", chunkX: "-1", chunkY: "2" },
+    { type: "read-model", protocolVersion: 2, readModel },
+    { type: "command-result", protocolVersion: 2, requestId, commandId, status: "accepted", readModelRevision: 0, saveRevision: 0, error: null },
+    { type: "command-result", protocolVersion: 2, requestId, commandId, status: "rejected", readModelRevision: 0, saveRevision: 0, error: commandError },
+    { type: "offline-progress", protocolVersion: 2, claimId: "claim:1:2", processedDurationMs: "1", creditedDurationMs: "2", sliceMaxMs: 0.25 },
+    { type: "export-ready", protocolVersion: 2, requestId, commandId, saveRevision: 1, filename: "baiyue-rpg-save-r1.json", backupUtf8: new ArrayBuffer(2) },
+    { type: "fatal", protocolVersion: 2, error: lifecycleError, readModelRevision: 0, saveRevision: 0 },
   ];
   assertExactBranches(isGameplayWorkerToMain, branches);
 
@@ -127,16 +130,25 @@ test("a fully populated read model validates canonical fog and signed clock skew
   const populated = structuredClone(readModel);
   populated.readModelRevision = 4;
   populated.startup = "ready";
-  populated.player = { position: point, hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2c" };
+  populated.player = {
+    position: point,
+    hp: { currentMicro: "100000000", maxMicro: "100000000" },
+    state: "alive",
+    naturalRegen: "1% max HP / 10s",
+    revivalGraceRemainingMs: null,
+  };
   populated.exploration = { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, observationRadiusTiles: 4, revealedTileCount: 49 };
   populated.skills = {
     gathering: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
     woodcutting: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
     mining: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
     crafting: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
+    melee: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
+    stealth: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
   };
   populated.inventory = { items: [{ itemId: "fiber", displayName: "纤维", category: "material", quantity: 1 }] };
   populated.equipment = {
+    weapon: { itemId: "worn_blade", displayName: "破旧短刃", damageMin: 4, damageMax: 6, accuracyBonus: 5, attackIntervalMs: "2500", requiredMeleeLevel: 1 },
     axe: { itemId: "worn_axe", displayName: "破旧斧", tier: 0, speedBps: 0 },
     pickaxe: { itemId: "worn_pickaxe", displayName: "破旧镐", tier: 0, speedBps: 0 },
   };
@@ -157,7 +169,8 @@ test("a fully populated read model validates canonical fog and signed clock skew
   populated.offlineReport = {
     claimId: "claim:1:5", rawElapsedMs: -5, clockSkew: "backward", creditedDurationMs: "0", discardedDurationMs: "0",
     fromWorldTimeMs: "10", toWorldTimeMs: "10", taskBefore: null, taskAfter: null,
-    revealedTiles: 0, itemDeltas: [], skillXpGains: [], stopReason: null, committedRevision: 1,
+    revealedTiles: 0, itemDeltas: [], skillXpGains: [], targetKills: 0, otherKills: 0, deaths: 0, respawns: 0,
+    finalHpMicro: "100000000", stopReason: null, committedRevision: 1,
   };
   assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: populated }), true);
   const recipeTamper = structuredClone(populated);

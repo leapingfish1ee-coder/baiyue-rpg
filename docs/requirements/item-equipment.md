@@ -200,7 +200,7 @@ skill speed
 
 ### 普通狩猎与新增配方
 
-- T1 狩猎目标 guaranteed drop：`raw_hide ×1`。
+- `graymane_boar` guaranteed drop：`loot:graymane_boar:raw_hide:guaranteed` → `raw_hide ×1`。
 - `hunter_coat`：`工艺 2`；`raw_hide ×4 + rope ×2`；`45s`；`45 XP`；内容表须声明完整输出数量。
 - `trail_charm`：`工艺 2`；`raw_hide ×2 + rope ×2`；`30s`；`30 XP`；内容表须声明完整输出数量。
 

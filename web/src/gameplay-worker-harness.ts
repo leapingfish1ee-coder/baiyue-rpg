@@ -3,7 +3,7 @@ import { GameplayClient, GameplayTerrainBroker } from "./gameplay-client.ts";
 import { canonicalJson } from "./gameplay/canonical-json.ts";
 import {
   isGameplayWorkerToMain,
-  type GameplayReadModelV1,
+  type GameplayReadModelV2,
   type GameplayWorkerToMain,
   type MainToGameplayWorker,
   type WorldPoint,
@@ -57,9 +57,9 @@ async function finishDirectDestination(
 
 function waitForReadModel(
   client: GameplayClient,
-  predicate: (readModel: GameplayReadModelV1) => boolean,
+  predicate: (readModel: GameplayReadModelV2) => boolean,
   timeoutMs = 30_000,
-): Promise<GameplayReadModelV1> {
+): Promise<GameplayReadModelV2> {
   const current = client.readModel;
   if (current !== null && predicate(current)) return Promise.resolve(current);
   return new Promise((resolve, reject) => {
@@ -69,7 +69,7 @@ function waitForReadModel(
       clearTimeout(timeout);
       unsubscribe();
     };
-    const listener = (readModel: GameplayReadModelV1): void => {
+    const listener = (readModel: GameplayReadModelV2): void => {
       if (!predicate(readModel) || settled) return;
       settled = true;
       cleanup();
@@ -87,7 +87,7 @@ function waitForReadModel(
   });
 }
 
-function semanticReadModel(readModel: GameplayReadModelV1): unknown {
+function semanticReadModel(readModel: GameplayReadModelV2): unknown {
   return {
     startup: readModel.startup,
     generatorVersion: readModel.generatorVersion,
@@ -105,7 +105,7 @@ function sourceEffect(effect: EngineTerrainEffect, generatorVersion: number): So
   return { seed: effect.seed, generatorVersion, chunkKey: effect.chunkKey, chunkX: effect.chunkX, chunkY: effect.chunkY };
 }
 
-function movingSemantic(readModel: GameplayReadModelV1): unknown {
+function movingSemantic(readModel: GameplayReadModelV2): unknown {
   return {
     player: readModel.player,
     task: readModel.task === null ? null : { ...readModel.task, createdWorldTimeMs: "<command-time>" },
@@ -279,7 +279,7 @@ function commandId(ordinal: number): string { return `cmd:${HARNESS_NONCE}:${ord
 function landBuffer(): ArrayBuffer { return new Uint8Array(4096).fill(3).buffer; }
 function terrainResult(request: Extract<GameplayWorkerToMain, { type: "terrain-request" }>): MainToGameplayWorker {
   return {
-    type: "terrain-result", protocolVersion: 1, terrainRequestId: request.terrainRequestId,
+    type: "terrain-result", protocolVersion: 2, terrainRequestId: request.terrainRequestId,
     gameplayEpoch: request.gameplayEpoch, chunkKey: request.chunkKey, chunkX: request.chunkX, chunkY: request.chunkY,
     generatorVersion: 3, baseTerrain: landBuffer(),
   };
@@ -298,12 +298,12 @@ async function runRawProtocolAndIdempotency(): Promise<unknown> {
     );
     session.addHook((message) => { if (message.type === "terrain-request") broker.handle(message); });
 
-    const initialize = { type: "initialize", protocolVersion: 1, requestId: requestId(0), generatorVersion: version, wallClockMs: 1 } as const;
+    const initialize = { type: "initialize", protocolVersion: 2, requestId: requestId(0), generatorVersion: version, wallClockMs: 1 } as const;
     session.send(initialize);
     session.send(initialize);
     await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(0));
 
-    const create = { type: "command", protocolVersion: 1, requestId: requestId(1), command: {
+    const create = { type: "command", protocolVersion: 2, requestId: requestId(1), command: {
       type: "CreateWorld", commandId: commandId(0), seed: SEED, seedSource: "manual", wallClockMs: 2,
     } } as const;
     session.send(create);
@@ -317,7 +317,7 @@ async function runRawProtocolAndIdempotency(): Promise<unknown> {
     const conflict = await session.waitFor((message) => message.type === "command-result" && message.requestId === requestId(3));
 
     session.send({ type: "flush", requestId: requestId(4) });
-    session.send({ type: "unknown-message", protocolVersion: 1, requestId: requestId(5) });
+    session.send({ type: "unknown-message", protocolVersion: 2, requestId: requestId(5) });
     session.send({ type: "flush", protocolVersion: 2, requestId: requestId(6), wallClockMs: 3 });
     const invalid = await session.waitFor((message) => message.type === "protocol-error" && message.requestId === requestId(4));
     const unknown = await session.waitFor((message) => message.type === "protocol-error" && message.requestId === requestId(5));
@@ -364,17 +364,17 @@ async function runRawTerrainCorrelation(): Promise<unknown> {
         session.send(duplicate, duplicate.type === "terrain-result" ? [duplicate.baseTerrain] : []);
       }
     });
-    session.send({ type: "initialize", protocolVersion: 1, requestId: requestId(0), generatorVersion: 3, wallClockMs: 1 });
+    session.send({ type: "initialize", protocolVersion: 2, requestId: requestId(0), generatorVersion: 3, wallClockMs: 1 });
     await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(0));
-    session.send({ type: "command", protocolVersion: 1, requestId: requestId(1), command: {
+    session.send({ type: "command", protocolVersion: 2, requestId: requestId(1), command: {
       type: "CreateWorld", commandId: commandId(0), seed: SEED, seedSource: "manual", wallClockMs: 2,
     } });
     await session.waitFor((message) => message.type === "command-result" && message.requestId === requestId(1));
-    session.send({ type: "command", protocolVersion: 1, requestId: requestId(2), command: {
+    session.send({ type: "command", protocolVersion: 2, requestId: requestId(2), command: {
       type: "ResetSave", commandId: commandId(1), confirmed: true, wallClockMs: 3,
     } });
     await session.waitFor((message) => message.type === "command-result" && message.requestId === requestId(2));
-    session.send({ type: "command", protocolVersion: 1, requestId: requestId(3), command: {
+    session.send({ type: "command", protocolVersion: 2, requestId: requestId(3), command: {
       type: "CreateWorld", commandId: commandId(2), seed: "20260810", seedSource: "manual", wallClockMs: 4,
     } });
     const second = await session.waitFor((message) => message.type === "command-result" && message.requestId === requestId(3));
@@ -412,14 +412,14 @@ async function runTerrainFailureScenario(mode: "malformed" | "transient" | "perm
       }
       const suffix = terrainRequests.toString(16).padStart(16, "0");
       session.send({
-        type: "terrain-error", protocolVersion: 1, terrainRequestId: message.terrainRequestId,
+        type: "terrain-error", protocolVersion: 2, terrainRequestId: message.terrainRequestId,
         gameplayEpoch: message.gameplayEpoch, code: "terrain/generation_failed", transient: mode === "transient",
         diagnosticId: `diag:terrain:generation-failed:${suffix}`,
       });
     });
-    session.send({ type: "initialize", protocolVersion: 1, requestId: requestId(0), generatorVersion: 3, wallClockMs: 1 });
+    session.send({ type: "initialize", protocolVersion: 2, requestId: requestId(0), generatorVersion: 3, wallClockMs: 1 });
     await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(0));
-    session.send({ type: "command", protocolVersion: 1, requestId: requestId(1), command: {
+    session.send({ type: "command", protocolVersion: 2, requestId: requestId(1), command: {
       type: "CreateWorld", commandId: commandId(0), seed: SEED, seedSource: "manual", wallClockMs: 2,
     } });
     await session.waitFor((message) => message.type === "fatal");
@@ -587,9 +587,9 @@ async function probeGameplayInitialization(): Promise<{ status: string | null; c
   const session = new RawGameplaySession();
   try {
     await session.ready();
-    session.send({ type: "initialize", protocolVersion: 1, requestId: requestId(0), generatorVersion: 3, wallClockMs: 2_000 });
+    session.send({ type: "initialize", protocolVersion: 2, requestId: requestId(0), generatorVersion: 3, wallClockMs: 2_000 });
     const result = await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(0));
-    session.send({ type: "shutdown", protocolVersion: 1, requestId: requestId(1) });
+    session.send({ type: "shutdown", protocolVersion: 2, requestId: requestId(1) });
     await session.waitFor((message) => message.type === "request-result" && message.requestId === requestId(1));
     return {
       status: result.message.type === "request-result" ? result.message.status : null,
@@ -683,16 +683,16 @@ async function runWebLockExclusion(): Promise<unknown> {
   try {
     const version = await chunks.whenReady();
     await Promise.all([first.ready(), second.ready()]);
-    first.send({ type: "initialize", protocolVersion: 1, requestId: requestId(0), generatorVersion: version, wallClockMs: 1 });
+    first.send({ type: "initialize", protocolVersion: 2, requestId: requestId(0), generatorVersion: version, wallClockMs: 1 });
     const firstResult = await first.waitFor((message) => message.type === "request-result" && message.requestId === requestId(0));
-    second.send({ type: "initialize", protocolVersion: 1, requestId: requestId(1), generatorVersion: version, wallClockMs: 1 });
+    second.send({ type: "initialize", protocolVersion: 2, requestId: requestId(1), generatorVersion: version, wallClockMs: 1 });
     const blocked = await second.waitFor((message) => message.type === "request-result" && message.requestId === requestId(1));
     const blockedReadModels = second.messages.filter((message) => message.type === "read-model").length;
-    first.send({ type: "shutdown", protocolVersion: 1, requestId: requestId(2) });
+    first.send({ type: "shutdown", protocolVersion: 2, requestId: requestId(2) });
     await first.waitFor((message) => message.type === "request-result" && message.requestId === requestId(2));
-    second.send({ type: "initialize", protocolVersion: 1, requestId: requestId(3), generatorVersion: version, wallClockMs: 2 });
+    second.send({ type: "initialize", protocolVersion: 2, requestId: requestId(3), generatorVersion: version, wallClockMs: 2 });
     const retried = await second.waitFor((message) => message.type === "request-result" && message.requestId === requestId(3));
-    second.send({ type: "shutdown", protocolVersion: 1, requestId: requestId(4) });
+    second.send({ type: "shutdown", protocolVersion: 2, requestId: requestId(4) });
     await second.waitFor((message) => message.type === "request-result" && message.requestId === requestId(4));
     return {
       firstStatus: firstResult.message.type === "request-result" ? firstResult.message.status : null,

@@ -30,7 +30,7 @@ import {
 } from "./contracts.ts";
 import { base64ToFogBits, fogBitsToBase64, FOG_BYTES_PER_CHUNK } from "./fog.ts";
 import { floorDiv, levelFromTotalXp } from "./math.ts";
-import type { KnownResourcePlacement } from "./engine.ts";
+import type { KnownEnemyPlacement, KnownResourcePlacement, PersistedCombatState, PersistedRespawnState } from "./engine.ts";
 import { isRecipeId, isResourcePrototypeId, taskKindMatchesPrototype, type RecipeId, type ResourcePrototypeId, type ToolItemId, type ToolSlot } from "./content.ts";
 
 export const GAMEPLAY_DATABASE_NAME = "baiyue-rpg-gameplay";
@@ -51,7 +51,8 @@ export type PersistedTask =
   | Readonly<{ task_id: string; kind: "Gather"; target_prototype_id: "wild_fiber"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
   | Readonly<{ task_id: string; kind: "Woodcut"; target_prototype_id: "softwood_tree"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
   | Readonly<{ task_id: string; kind: "Mine"; target_prototype_id: "surface_stone" | "shallow_copper_deposit"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
-  | Readonly<{ task_id: string; kind: "Produce"; recipe_id: RecipeId; requested_quantity: number | null; completed_quantity: number; created_world_time_ms: string }>;
+  | Readonly<{ task_id: string; kind: "Produce"; recipe_id: RecipeId; requested_quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
+  | Readonly<{ task_id: string; kind: "Hunt"; archetype_id: "graymane_boar"; requested_kills: number | null; completed_kills: number; created_world_time_ms: string }>;
 
 export type PersistedMotionLeg = Readonly<{
   start: WorldPoint;
@@ -64,7 +65,7 @@ export type PersistedMotionLeg = Readonly<{
 }>;
 
 export type PersistedExecution = Readonly<{
-  state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
+  state: "idle" | "planning" | "moving" | "acting" | "combat" | "respawning" | "waiting" | "paused";
   route_purpose: "explore" | "task_target" | "auto_explore" | null;
   route: readonly WorldPoint[];
   route_index: number;
@@ -101,9 +102,9 @@ export type MetaRecord = Readonly<{
   committed_wall_clock_ms: number;
   committed_world_time_ms: string;
   db_schema_version: 1;
-  save_schema_version: 4;
-  game_rules_version: 4;
-  content_version: 4;
+  save_schema_version: 5;
+  game_rules_version: 5;
+  content_version: 5;
   generator_version: number;
   integrity_algorithm: typeof INTEGRITY_ALGORITHM;
   core_checksum_sha256: string;
@@ -117,21 +118,27 @@ export type CoreRecord = Readonly<{
   world_time_ms: string;
   position: WorldPoint;
   camp_anchor: WorldPoint;
-  hp: Readonly<{ current: 100; max: 100 }>;
+  hp: Readonly<{ current_micro: string; max_micro: string; regen_numerator: string }>;
   exploration: Readonly<{ level: number; total_xp: number }>;
   skills: Readonly<{
     gathering: Readonly<{ level: number; total_xp: number }>;
     woodcutting: Readonly<{ level: number; total_xp: number }>;
     mining: Readonly<{ level: number; total_xp: number }>;
     crafting: Readonly<{ level: number; total_xp: number }>;
+    melee: Readonly<{ level: number; total_xp: number }>;
+    stealth: Readonly<{ level: number; total_xp: number }>;
   }>;
   inventory: Readonly<{
-    fiber: number; softwood: number; stone: number; copper_ore: number; rope: number;
+    fiber: number; softwood: number; stone: number; copper_ore: number; rope: number; raw_hide: number;
     worn_axe: number; worn_pickaxe: number; reinforced_axe: number; reinforced_pickaxe: number;
   }>;
   equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: PersistedTask | null;
   execution: PersistedExecution;
+  combat: PersistedCombatState | null;
+  respawn: PersistedRespawnState | null;
+  revival_grace_until_world_time_ms: string | null;
+  counters: Readonly<{ target_kills: number; other_kills: number; deaths: number; respawns: number }>;
   command_receipts: readonly CommandReceiptRecord[];
   next_event_ordinal: string;
   last_offline_report: OfflineReport | null;
@@ -143,6 +150,7 @@ export type WorldChunkRecord = Readonly<{
   chunk_y: string;
   revealed_bits: Uint8Array;
   known_placements: readonly KnownResourcePlacement[];
+  known_enemy_placements: readonly KnownEnemyPlacement[];
   revision: number;
   record_checksum_sha256: string;
 }>;
@@ -179,6 +187,7 @@ export type BackupChunkV1 = Readonly<{
   chunkY: string;
   revealedBase64: string;
   knownPlacements: readonly KnownResourcePlacement[];
+  knownEnemyPlacements: readonly KnownEnemyPlacement[];
   revision: number;
 }>;
 
@@ -273,6 +282,13 @@ function isPersistedTask(value: unknown): value is PersistedTask {
       && isSafeUint(task.completed_quantity)
       && (task.requested_quantity === null || task.completed_quantity <= task.requested_quantity);
   }
+  if (task.kind === "Hunt") {
+    return exactObject(task, ["task_id", "kind", "archetype_id", "requested_kills", "completed_kills", "created_world_time_ms"])
+      && task.archetype_id === "graymane_boar"
+      && (task.requested_kills === null || (isSafeUint(task.requested_kills) && task.requested_kills > 0))
+      && isSafeUint(task.completed_kills)
+      && (task.requested_kills === null || task.completed_kills <= task.requested_kills);
+  }
   if (!exactObject(task, ["task_id", "kind", "mode", "destination", "created_world_time_ms"]) || task.kind !== "Explore") return false;
   return task.mode === "continuous" ? task.destination === null : task.mode === "destination" && isWorldPoint(task.destination);
 }
@@ -288,7 +304,7 @@ function isMotion(value: unknown): value is PersistedMotionLeg {
 
 function isExecution(value: unknown): value is PersistedExecution {
   if (!exactObject(value, ["state", "route_purpose", "route", "route_index", "motion", "target_placement_id", "action", "waiting_reason"]) || !Array.isArray(value.route)) return false;
-  if (!["idle", "planning", "moving", "acting", "waiting", "paused"].includes(value.state as string)
+  if (!["idle", "planning", "moving", "acting", "combat", "respawning", "waiting", "paused"].includes(value.state as string)
     || value.route.length > 65_536 || !value.route.every(isWorldPoint) || !isSafeUint(value.route_index)) return false;
   if (!(value.route_purpose === null || ["explore", "task_target", "auto_explore"].includes(value.route_purpose as string))) return false;
   if (value.route.length === 0 ? value.route_index !== 0 : value.route_index >= value.route.length) return false;
@@ -319,6 +335,85 @@ function isExecution(value: unknown): value is PersistedExecution {
   return value.state === "waiting" || value.state === "paused" ? value.waiting_reason !== null : value.waiting_reason === null;
 }
 
+function isPersistedRational(value: unknown): boolean {
+  return exactObject(value, ["numerator", "denominator"])
+    && isCanonicalUnsignedDecimal(value.numerator) && isCanonicalUnsignedDecimal(value.denominator)
+    && BigInt(value.denominator) > 0n;
+}
+
+function isPausedMovement(value: unknown): boolean {
+  if (!exactObject(value, ["route", "legProfiles", "routeIndex", "elapsedRouteMs", "boundaryIndex"])
+    || !Array.isArray(value.route) || !Array.isArray(value.legProfiles)
+    || value.route.length < 2 || value.route.length > 65_536 || !value.route.every(isWorldPoint)
+    || value.legProfiles.length !== value.route.length - 1 || !isSafeUint(value.routeIndex)
+    || value.routeIndex >= value.legProfiles.length || !isCanonicalUnsignedDecimal(value.elapsedRouteMs)
+    || !isSafeUint(value.boundaryIndex)) return false;
+  for (let index = 0; index < value.legProfiles.length; index += 1) {
+    const profile = value.legProfiles[index];
+    if (!exactObject(profile, ["start", "end", "runs", "boundaryParameters", "cost"])
+      || !isWorldPoint(profile.start) || !isWorldPoint(profile.end)
+      || canonicalJson(profile.start) !== canonicalJson(value.route[index])
+      || canonicalJson(profile.end) !== canonicalJson(value.route[index + 1])
+      || !Array.isArray(profile.runs) || !Array.isArray(profile.boundaryParameters)
+      || !profile.boundaryParameters.every(isPersistedRational) || !isCanonicalUnsignedDecimal(profile.cost)
+      || BigInt(profile.cost) <= 0n) return false;
+    for (const run of profile.runs) {
+      if (!exactObject(run, ["startParameter", "endParameter", "terrainFactor", "cost", "cumulativeCostBefore"])
+        || !isPersistedRational(run.startParameter) || !isPersistedRational(run.endParameter)
+        || !isCanonicalUnsignedDecimal(run.terrainFactor) || BigInt(run.terrainFactor) <= 0n
+        || !isCanonicalUnsignedDecimal(run.cost) || !isCanonicalUnsignedDecimal(run.cumulativeCostBefore)) return false;
+    }
+    if (index === value.routeIndex && value.boundaryIndex > profile.boundaryParameters.length) return false;
+  }
+  return true;
+}
+
+function isPausedExecution(value: unknown): boolean {
+  if (!exactObject(value, ["taskId", "targetPlacementId", "routePurpose", "movement", "action"])
+    || !isTaskId(value.taskId)
+    || !(value.targetPlacementId === null || isPlacementId(value.targetPlacementId))
+    || !(value.routePurpose === null || ["explore", "task_target", "auto_explore"].includes(value.routePurpose as string))
+    || !(value.movement === null || isPausedMovement(value.movement))
+    || (value.movement !== null && value.action !== null)) return false;
+  if (value.action === null) return true;
+  if (typeof value.action !== "object" || Array.isArray(value.action)) return false;
+  const action = value.action as Record<string, unknown>;
+  if (!isActionId(action.actionId) || !isCanonicalUnsignedDecimal(action.remainingMs)
+    || !isCanonicalUnsignedDecimal(action.durationMs) || BigInt(action.remainingMs) > BigInt(action.durationMs)
+    || !isSafeUint(action.skillSpeedBps) || !isSafeUint(action.totalSpeedBps)) return false;
+  if (action.kind === "Resource") {
+    return exactObject(action, ["kind", "actionId", "placementId", "prototypeId", "remainingMs", "durationMs", "skillSpeedBps", "toolSpeedBps", "totalSpeedBps"])
+      && isPlacementId(action.placementId) && isResourcePrototypeId(action.prototypeId)
+      && isSafeUint(action.toolSpeedBps) && action.totalSpeedBps === action.skillSpeedBps + action.toolSpeedBps;
+  }
+  return action.kind === "Produce"
+    && exactObject(action, ["kind", "actionId", "recipeId", "remainingMs", "durationMs", "skillSpeedBps", "totalSpeedBps"])
+    && isRecipeId(action.recipeId) && action.totalSpeedBps === action.skillSpeedBps;
+}
+
+function isPersistedCombat(value: unknown): value is PersistedCombatState {
+  if (!exactObject(value, ["combatId", "encounterInstanceId", "placementId", "archetypeId", "triggeredByHunt", "playerAccuracy", "playerEvasion", "playerArmor", "playerDamageMin", "playerDamageMax", "playerAttackIntervalMs", "enemyAccuracy", "enemyEvasion", "enemyArmor", "enemyDamageMin", "enemyDamageMax", "enemyAttackIntervalMs", "enemyHpMicro", "playerNextAttackWorldTimeMs", "enemyNextAttackWorldTimeMs", "eventOrdinal", "lastAttack", "paused"])) return false;
+  if (typeof value.combatId !== "string" || !value.combatId.startsWith("combat:")
+    || typeof value.encounterInstanceId !== "string" || !isPlacementId(value.placementId)
+    || value.archetypeId !== "graymane_boar" || typeof value.triggeredByHunt !== "boolean") return false;
+  for (const field of ["playerAccuracy", "playerEvasion", "playerArmor", "playerDamageMin", "playerDamageMax", "enemyAccuracy", "enemyEvasion", "enemyArmor", "enemyDamageMin", "enemyDamageMax"] as const) {
+    if (!isSafeUint(value[field])) return false;
+  }
+  for (const field of ["playerAttackIntervalMs", "enemyAttackIntervalMs", "enemyHpMicro", "playerNextAttackWorldTimeMs", "enemyNextAttackWorldTimeMs", "eventOrdinal"] as const) {
+    if (!isCanonicalUnsignedDecimal(value[field])) return false;
+  }
+  if (BigInt(value.enemyHpMicro as string) <= 0n || BigInt(value.playerAttackIntervalMs as string) <= 0n || BigInt(value.enemyAttackIntervalMs as string) <= 0n) return false;
+  if (!(value.lastAttack === null || (exactObject(value.lastAttack, ["actor", "hit", "damage"])
+    && (value.lastAttack.actor === "player" || value.lastAttack.actor === "enemy")
+    && typeof value.lastAttack.hit === "boolean" && isSafeUint(value.lastAttack.damage)))) return false;
+  return value.paused === null || isPausedExecution(value.paused);
+}
+
+function isPersistedRespawn(value: unknown): value is PersistedRespawnState {
+  return exactObject(value, ["deathPosition", "deadlineWorldTimeMs"])
+    && isWorldPoint(value.deathPosition) && isCanonicalUnsignedDecimal(value.deadlineWorldTimeMs);
+}
+
 function isReceipt(value: unknown): value is CommandReceiptRecord {
   return exactObject(value, ["command_id", "command_type", "payload_sha256", "terminal_status", "save_revision", "reason_code"])
     && isCommandId(value.command_id) && ["CreateWorld", "SetTask", "CancelTask", "EquipItem", "UnequipSlot"].includes(value.command_type as string)
@@ -327,21 +422,25 @@ function isReceipt(value: unknown): value is CommandReceiptRecord {
 }
 
 export function isCoreRecord(value: unknown): value is CoreRecord {
-  if (!exactObject(value, ["save_id", "revision", "seed", "world_time_ms", "position", "camp_anchor", "hp", "exploration", "skills", "inventory", "equipment", "task", "execution", "command_receipts", "next_event_ordinal", "last_offline_report"])) return false;
+  if (!exactObject(value, ["save_id", "revision", "seed", "world_time_ms", "position", "camp_anchor", "hp", "exploration", "skills", "inventory", "equipment", "task", "execution", "combat", "respawn", "revival_grace_until_world_time_ms", "counters", "command_receipts", "next_event_ordinal", "last_offline_report"])) return false;
   if (value.save_id !== SAVE_ID || !isSafeUint(value.revision) || value.revision < 1 || !isSeedDecimal(value.seed)
     || !isCanonicalUnsignedDecimal(value.world_time_ms) || !isWorldPoint(value.position) || !isWorldPoint(value.camp_anchor)) return false;
-  if (!exactObject(value.hp, ["current", "max"]) || value.hp.current !== 100 || value.hp.max !== 100) return false;
+  if (!exactObject(value.hp, ["current_micro", "max_micro", "regen_numerator"])
+    || !isCanonicalUnsignedDecimal(value.hp.current_micro) || !isCanonicalUnsignedDecimal(value.hp.max_micro)
+    || !isCanonicalUnsignedDecimal(value.hp.regen_numerator)
+    || value.hp.max_micro !== "100000000" || BigInt(value.hp.current_micro) > BigInt(value.hp.max_micro)
+    || BigInt(value.hp.regen_numerator) >= 1_000_000n) return false;
   if (!exactObject(value.exploration, ["level", "total_xp"]) || !isSafeUint(value.exploration.level)
     || value.exploration.level < 1 || value.exploration.level > 100 || !isSafeUint(value.exploration.total_xp)) return false;
-  if (!exactObject(value.skills, ["gathering", "woodcutting", "mining", "crafting"])) return false;
-  for (const skillId of ["gathering", "woodcutting", "mining", "crafting"] as const) {
+  if (!exactObject(value.skills, ["gathering", "woodcutting", "mining", "crafting", "melee", "stealth"])) return false;
+  for (const skillId of ["gathering", "woodcutting", "mining", "crafting", "melee", "stealth"] as const) {
     const skill = value.skills[skillId];
     if (!exactObject(skill, ["level", "total_xp"]) || !isSafeUint(skill.level) || skill.level < 1 || skill.level > 100
       || !isSafeUint(skill.total_xp) || skill.level !== levelFromTotalXp(skill.total_xp)) return false;
   }
-  if (!exactObject(value.inventory, ["fiber", "softwood", "stone", "copper_ore", "rope", "worn_axe", "worn_pickaxe", "reinforced_axe", "reinforced_pickaxe"])
+  if (!exactObject(value.inventory, ["fiber", "softwood", "stone", "copper_ore", "rope", "raw_hide", "worn_axe", "worn_pickaxe", "reinforced_axe", "reinforced_pickaxe"])
     || !isSafeUint(value.inventory.fiber) || !isSafeUint(value.inventory.softwood) || !isSafeUint(value.inventory.stone)
-    || !isSafeUint(value.inventory.copper_ore) || !isSafeUint(value.inventory.rope)
+    || !isSafeUint(value.inventory.copper_ore) || !isSafeUint(value.inventory.rope) || !isSafeUint(value.inventory.raw_hide)
     || !isSafeUint(value.inventory.worn_axe) || !isSafeUint(value.inventory.worn_pickaxe)
     || !isSafeUint(value.inventory.reinforced_axe) || !isSafeUint(value.inventory.reinforced_pickaxe)) return false;
   if (!exactObject(value.equipment, ["axe", "pickaxe"])
@@ -350,6 +449,12 @@ export function isCoreRecord(value: unknown): value is CoreRecord {
     || value.inventory.worn_axe + (value.equipment.axe === "worn_axe" ? 1 : 0) !== 1
     || value.inventory.worn_pickaxe + (value.equipment.pickaxe === "worn_pickaxe" ? 1 : 0) !== 1) return false;
   if (!(value.task === null || isPersistedTask(value.task)) || !isExecution(value.execution)
+    || !(value.combat === null || isPersistedCombat(value.combat))
+    || !(value.respawn === null || isPersistedRespawn(value.respawn))
+    || !(value.revival_grace_until_world_time_ms === null || isCanonicalUnsignedDecimal(value.revival_grace_until_world_time_ms))
+    || !exactObject(value.counters, ["target_kills", "other_kills", "deaths", "respawns"])
+    || !isSafeUint(value.counters.target_kills) || !isSafeUint(value.counters.other_kills)
+    || !isSafeUint(value.counters.deaths) || !isSafeUint(value.counters.respawns)
     || !Array.isArray(value.command_receipts) || !value.command_receipts.every(isReceipt)
     || !isCanonicalUnsignedDecimal(value.next_event_ordinal) || !(value.last_offline_report === null || isOfflineReport(value.last_offline_report))) return false;
   const receipts = value.command_receipts;
@@ -362,12 +467,17 @@ export function isCoreRecord(value: unknown): value is CoreRecord {
     || receipts.filter((receipt) => receipt.command_type === "CreateWorld").length !== 1) return false;
 
   const execution = value.execution;
+  if ((execution.state === "combat") !== (value.combat !== null) || (execution.state === "respawning") !== (value.respawn !== null)) return false;
+  if ((execution.state === "combat" || execution.state === "respawning")
+    ? execution.route.length !== 0 || execution.motion !== null || execution.action !== null || execution.waiting_reason !== null
+    : value.combat !== null || value.respawn !== null) return false;
+  if ((value.respawn === null) !== (BigInt(value.hp.current_micro) > 0n)) return false;
   if (execution.state === "idle" && (value.task !== null || execution.route.length !== 0 || execution.motion !== null || execution.waiting_reason !== null)) return false;
   if (execution.state === "planning" && (value.task === null || execution.route.length !== 0 || execution.motion !== null || execution.waiting_reason !== null)) return false;
   if ((execution.state === "waiting" || execution.state === "moving") && value.task === null) return false;
   if (execution.state === "waiting" && execution.motion !== null) return false;
   if (execution.state === "acting") {
-    if (value.task === null || value.task.kind === "Explore" || execution.action === null) return false;
+    if (value.task === null || value.task.kind === "Explore" || value.task.kind === "Hunt" || execution.action === null) return false;
     if (execution.action.kind === "Resource") {
       if (value.task.kind === "Produce" || execution.target_placement_id !== execution.action.placement_id
         || value.task.target_prototype_id !== execution.action.prototype_id) return false;
@@ -423,15 +533,39 @@ function isKnownPlacement(value: unknown): value is KnownResourcePlacement {
         && BigInt(value.nextAvailableWorldTimeMs) > BigInt(value.depletedWorldTimeMs));
 }
 
+function isKnownEnemyPlacement(value: unknown): value is KnownEnemyPlacement {
+  return exactObject(value, ["placementId", "archetypeId", "source", "tileX", "tileY", "point", "availability", "spawnCycle", "deadWorldTimeMs", "nextAvailableWorldTimeMs", "encounterChecked", "pendingStealthPass", "stealthSettled"])
+    && isPlacementId(value.placementId) && value.archetypeId === "graymane_boar"
+    && (value.source === "ambient" || value.source === "guarantee")
+    && isCanonicalSignedDecimal(value.tileX, -(1n << 31n), (1n << 31n) - 1n)
+    && isCanonicalSignedDecimal(value.tileY, -(1n << 31n), (1n << 31n) - 1n) && isWorldPoint(value.point)
+    && value.point.x === (BigInt(value.tileX) * 1024n + 512n).toString()
+    && value.point.y === (BigInt(value.tileY) * 1024n + 512n).toString()
+    && (value.availability === "active" || value.availability === "dead") && isSafeUint(value.spawnCycle)
+    && (value.deadWorldTimeMs === null || isCanonicalUnsignedDecimal(value.deadWorldTimeMs))
+    && (value.nextAvailableWorldTimeMs === null || isCanonicalUnsignedDecimal(value.nextAvailableWorldTimeMs))
+    && typeof value.encounterChecked === "boolean" && typeof value.pendingStealthPass === "boolean"
+    && typeof value.stealthSettled === "boolean" && !(value.pendingStealthPass && value.stealthSettled)
+    && (value.availability === "active"
+      ? value.deadWorldTimeMs === null && value.nextAvailableWorldTimeMs === null
+      : value.deadWorldTimeMs !== null && value.nextAvailableWorldTimeMs !== null
+        && !value.pendingStealthPass && BigInt(value.nextAvailableWorldTimeMs) > BigInt(value.deadWorldTimeMs));
+}
+
 export function isWorldChunkRecord(value: unknown): value is WorldChunkRecord {
-  if (!exactObject(value, ["chunk_key", "chunk_x", "chunk_y", "revealed_bits", "known_placements", "revision", "record_checksum_sha256"])
+  if (!exactObject(value, ["chunk_key", "chunk_x", "chunk_y", "revealed_bits", "known_placements", "known_enemy_placements", "revision", "record_checksum_sha256"])
     || !isChunkIdentity(value.chunk_key, value.chunk_x, value.chunk_y) || !(value.revealed_bits instanceof Uint8Array)
     || value.revealed_bits.byteLength !== FOG_BYTES_PER_CHUNK || !Array.isArray(value.known_placements)
-    || !value.known_placements.every(isKnownPlacement)) return false;
+    || !value.known_placements.every(isKnownPlacement) || !Array.isArray(value.known_enemy_placements)
+    || !value.known_enemy_placements.every(isKnownEnemyPlacement)) return false;
   const placements = value.known_placements;
+  const enemies = value.known_enemy_placements;
   return new Set(placements.map((placement) => placement.placementId)).size === placements.length
     && placements.every((placement, index) => index === 0 || placements[index - 1]!.placementId < placement.placementId)
     && placements.every((placement) => `${floorDiv(BigInt(placement.tileX), 64n)},${floorDiv(BigInt(placement.tileY), 64n)}` === value.chunk_key)
+    && new Set(enemies.map((placement) => placement.placementId)).size === enemies.length
+    && enemies.every((placement, index) => index === 0 || enemies[index - 1]!.placementId < placement.placementId)
+    && enemies.every((placement) => `${floorDiv(BigInt(placement.tileX), 64n)},${floorDiv(BigInt(placement.tileY), 64n)}` === value.chunk_key)
     && isSafeUint(value.revision) && value.revision >= 1 && isHexChecksum(value.record_checksum_sha256);
 }
 
@@ -448,10 +582,11 @@ function isResumeClaim(value: unknown): value is ResumeClaimRecord {
 }
 
 function isBackupChunk(value: unknown): value is BackupChunkV1 {
-  return exactObject(value, ["chunkKey", "chunkX", "chunkY", "revealedBase64", "knownPlacements", "revision"])
+  return exactObject(value, ["chunkKey", "chunkX", "chunkY", "revealedBase64", "knownPlacements", "knownEnemyPlacements", "revision"])
     && isChunkIdentity(value.chunkKey, value.chunkX, value.chunkY) && typeof value.revealedBase64 === "string"
     && (() => { try { base64ToFogBits(value.revealedBase64); return true; } catch { return false; } })()
     && Array.isArray(value.knownPlacements) && value.knownPlacements.every(isKnownPlacement)
+    && Array.isArray(value.knownEnemyPlacements) && value.knownEnemyPlacements.every(isKnownEnemyPlacement)
     && isSafeUint(value.revision) && value.revision >= 1;
 }
 
@@ -477,7 +612,8 @@ async function materializeBackup(snapshot: PersistedSnapshot, databaseVersion: n
     core: snapshot.core,
     chunks: snapshot.chunks.map((chunk) => ({
       chunkKey: chunk.chunk_key, chunkX: chunk.chunk_x, chunkY: chunk.chunk_y,
-      revealedBase64: fogBitsToBase64(chunk.revealed_bits), knownPlacements: chunk.known_placements, revision: chunk.revision,
+      revealedBase64: fogBitsToBase64(chunk.revealed_bits), knownPlacements: chunk.known_placements,
+      knownEnemyPlacements: chunk.known_enemy_placements, revision: chunk.revision,
     })),
   };
   return { ...withoutChecksum, checksum: await sha256Canonical(withoutChecksum) };
@@ -544,12 +680,14 @@ async function parseBackup(bytes: Uint8Array, generatorVersion: number): Promise
     sha256Canonical(core),
     ...orderedChunks.map((chunk) => checksumChunkFields({
       chunk_key: chunk.chunkKey, chunk_x: chunk.chunkX, chunk_y: chunk.chunkY,
-      revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: chunk.knownPlacements, revision: chunk.revision,
+      revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: chunk.knownPlacements,
+      known_enemy_placements: chunk.knownEnemyPlacements, revision: chunk.revision,
     })),
   ]);
   const worldChunks: WorldChunkRecord[] = orderedChunks.map((chunk, index) => ({
     chunk_key: chunk.chunkKey, chunk_x: chunk.chunkX, chunk_y: chunk.chunkY,
-    revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: chunk.knownPlacements, revision: chunk.revision,
+    revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: chunk.knownPlacements,
+    known_enemy_placements: chunk.knownEnemyPlacements, revision: chunk.revision,
     record_checksum_sha256: chunkChecksums[index]!,
   }));
   const meta: MetaRecord = {
@@ -663,13 +801,14 @@ export async function commandPayloadSha256(canonicalPayload: string): Promise<st
   return bytesToHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonicalPayload)));
 }
 
-async function checksumChunkFields(chunk: Pick<WorldChunkRecord, "chunk_key" | "chunk_x" | "chunk_y" | "revealed_bits" | "known_placements" | "revision">): Promise<string> {
+async function checksumChunkFields(chunk: Pick<WorldChunkRecord, "chunk_key" | "chunk_x" | "chunk_y" | "revealed_bits" | "known_placements" | "known_enemy_placements" | "revision">): Promise<string> {
   return sha256Canonical({
     chunk_key: chunk.chunk_key,
     chunk_x: chunk.chunk_x,
     chunk_y: chunk.chunk_y,
     revealed_base64: fogBitsToBase64(chunk.revealed_bits),
     known_placements: chunk.known_placements,
+    known_enemy_placements: chunk.known_enemy_placements,
     revision: chunk.revision,
   });
 }
@@ -790,6 +929,17 @@ async function validateSnapshot(snapshot: PersistedSnapshot, generatorVersion: n
   if (new Set(placementIds).size !== placementIds.length) {
     throw new PersistenceError("storage/integrity_failed", "known placement IDs are not globally unique");
   }
+  const enemyPlacementIds = chunks.flatMap((chunk) => chunk.known_enemy_placements.map((placement) => placement.placementId));
+  if (new Set(enemyPlacementIds).size !== enemyPlacementIds.length) {
+    throw new PersistenceError("storage/integrity_failed", "known enemy placement IDs are not globally unique");
+  }
+  if (core.combat !== null) {
+    const target = chunks.flatMap((chunk) => chunk.known_enemy_placements)
+      .find((placement) => placement.placementId === core.combat!.placementId);
+    if (target === undefined || target.availability !== "active" || target.archetypeId !== core.combat.archetypeId) {
+      throw new PersistenceError("storage/integrity_failed", "combat does not reference an active known enemy");
+    }
+  }
   if (core.execution.state === "acting") {
     const action = core.execution.action;
     if (action?.kind === "Resource") {
@@ -896,7 +1046,7 @@ export class GameplayStorage {
     return snapshot;
   }
 
-  async create(core: CoreRecord, worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>[], wallClockMs: number): Promise<PersistedSnapshot> {
+  async create(core: CoreRecord, worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[]; knownEnemyPlacements: readonly KnownEnemyPlacement[] }>[], wallClockMs: number): Promise<PersistedSnapshot> {
     try {
       if (this.currentSnapshot !== null) throw new PersistenceError("storage/integrity_failed", "a committed save already exists");
       if (!isCoreRecord(core) || core.revision !== 1 || core.command_receipts.length !== 1
@@ -908,7 +1058,8 @@ export class GameplayStorage {
           throw new PersistenceError("storage/integrity_failed", "new-world fog chunk identity is invalid");
         }
         const knownPlacements = [...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1);
-        return { chunk_key: chunk.chunkKey, chunk_x: chunkX, chunk_y: chunkY, revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: knownPlacements, revision: 1 };
+        const knownEnemyPlacements = [...chunk.knownEnemyPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1);
+        return { chunk_key: chunk.chunkKey, chunk_x: chunkX, chunk_y: chunkY, revealed_bits: base64ToFogBits(chunk.revealedBase64), known_placements: knownPlacements, known_enemy_placements: knownEnemyPlacements, revision: 1 };
       }).sort((left, right) => compareChunkKeysNumeric(left.chunk_key, right.chunk_key));
       const [coreChecksum, ...chunkChecksums] = await Promise.all([
         sha256Canonical(core),
@@ -947,7 +1098,7 @@ export class GameplayStorage {
 
   async commit(
     core: CoreRecord,
-    worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>[],
+    worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[]; knownEnemyPlacements: readonly KnownEnemyPlacement[] }>[],
     wallClockMs: number,
     deleteResumeClaim = false,
   ): Promise<PersistedSnapshot> {
@@ -958,7 +1109,7 @@ export class GameplayStorage {
         throw new PersistenceError("storage/integrity_failed", "commit core or revision is invalid");
       }
       const previousChunks = new Map(previous.chunks.map((chunk) => [chunk.chunk_key, chunk]));
-      const incoming = new Map<string, Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>>();
+      const incoming = new Map<string, Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[]; knownEnemyPlacements: readonly KnownEnemyPlacement[] }>>();
       for (const chunk of worldChunks) {
         const [chunkX, chunkY] = chunk.chunkKey.split(",");
         if (chunkX === undefined || chunkY === undefined || !isChunkIdentity(chunk.chunkKey, chunkX, chunkY)
@@ -986,14 +1137,21 @@ export class GameplayStorage {
           if ([...priorById.keys()].some((id) => !incomingById.has(id))) {
             throw new PersistenceError("storage/integrity_failed", "commit cannot remove known placements");
           }
+          const priorEnemyIds = new Set(prior.known_enemy_placements.map((placement) => placement.placementId));
+          const incomingEnemyIds = new Set(chunk.knownEnemyPlacements.map((placement) => placement.placementId));
+          if ([...priorEnemyIds].some((id) => !incomingEnemyIds.has(id))) {
+            throw new PersistenceError("storage/integrity_failed", "commit cannot remove known enemy placements");
+          }
           if (fogBitsToBase64(prior.revealed_bits) === chunk.revealedBase64
-            && canonicalJson(prior.known_placements) === canonicalJson([...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1))) continue;
+            && canonicalJson(prior.known_placements) === canonicalJson([...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1))
+            && canonicalJson(prior.known_enemy_placements) === canonicalJson([...chunk.knownEnemyPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1))) continue;
         }
         const [chunkX, chunkY] = chunk.chunkKey.split(",") as [string, string];
         dirtyWithoutChecksums.push({
           chunk_key: chunk.chunkKey, chunk_x: chunkX, chunk_y: chunkY,
           revealed_bits: nextBits,
           known_placements: [...chunk.knownPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1),
+          known_enemy_placements: [...chunk.knownEnemyPlacements].sort((left, right) => left.placementId < right.placementId ? -1 : 1),
           revision: core.revision,
         });
       }

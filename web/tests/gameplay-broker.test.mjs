@@ -19,7 +19,7 @@ function deferred() {
 function terrainRequest(overrides = {}) {
   return {
     type: "terrain-request",
-    protocolVersion: 1,
+    protocolVersion: 2,
     terrainRequestId: "terrain:1:0",
     gameplayEpoch: 1,
     readModelRevision: 0,

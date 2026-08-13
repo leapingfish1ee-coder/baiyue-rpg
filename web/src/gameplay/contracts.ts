@@ -1,11 +1,11 @@
 import { CHUNK_COORDINATE_MAX, CHUNK_COORDINATE_MIN, WORLD_POINT_NAV_MAX, WORLD_POINT_NAV_MIN } from "../world-contract.ts";
-import type { ItemId, MaterialItemId, RecipeId, ResourcePrototypeId, ResourceSkillId, ResourceTaskKind, SkillId, ToolItemId, ToolSlot } from "./content.ts";
+import type { EnemyArchetypeId, ItemId, MaterialItemId, RecipeId, ResourcePrototypeId, ResourceSkillId, ResourceTaskKind, SkillId, ToolItemId, ToolSlot, WeaponItemId } from "./content.ts";
 
-export const GAMEPLAY_PROTOCOL_VERSION = 1 as const;
+export const GAMEPLAY_PROTOCOL_VERSION = 2 as const;
 export const DB_SCHEMA_VERSION = 1 as const;
-export const SAVE_SCHEMA_VERSION = 4 as const;
-export const GAME_RULES_VERSION = 4 as const;
-export const CONTENT_VERSION = 4 as const;
+export const SAVE_SCHEMA_VERSION = 5 as const;
+export const GAME_RULES_VERSION = 5 as const;
+export const CONTENT_VERSION = 5 as const;
 export const EXPORT_FORMAT_VERSION = 1 as const;
 export const SAVE_ID = "save:local" as const;
 
@@ -46,7 +46,7 @@ export type ActivityReason =
 
 export type ProtocolError =
   | Readonly<{ code: "protocol/unknown_message" | "protocol/invalid_message"; params: null; diagnosticId: DiagnosticId }>
-  | Readonly<{ code: "protocol/version_mismatch"; params: Readonly<{ expected: 1; actual: U32 | null }>; diagnosticId: DiagnosticId }>;
+  | Readonly<{ code: "protocol/version_mismatch"; params: Readonly<{ expected: 2; actual: U32 | null }>; diagnosticId: DiagnosticId }>;
 
 export type LifecycleError =
   | Readonly<{ code: "save/incompatible_version"; params: Readonly<{ expected: U32; actual: U32; version: "db" | "save" | "rules" | "content" | "generator" }>; diagnosticId: DiagnosticId }>
@@ -59,6 +59,7 @@ export type CommandError =
   | Readonly<{ code: "command/id_conflict"; params: Readonly<{ commandId: CommandId }>; diagnosticId: null }>
   | Readonly<{ code: "command/invalid_seed"; params: null; diagnosticId: null }>
   | Readonly<{ code: "command/invalid_destination"; params: Readonly<{ destination: WorldPoint }>; diagnosticId: null }>
+  | Readonly<{ code: "command/combat_locked"; params: null; diagnosticId: null }>
   | Readonly<{ code: "command/unknown_target_prototype" | "command/content_placement_failed" | "command/item_unavailable" | "command/invalid_equipment"; params: null; diagnosticId: null }>
   | Readonly<{ code: "command/skill_level_too_low"; params: Readonly<{ prototypeId: ResourcePrototypeId; skillId: ResourceSkillId; requiredLevel: SafeUint; actualLevel: SafeUint }>; diagnosticId: null }>
   | Readonly<{ code: "command/recipe_level_too_low"; params: Readonly<{ recipeId: RecipeId; skillId: "crafting"; requiredLevel: SafeUint; actualLevel: SafeUint }>; diagnosticId: null }>
@@ -116,7 +117,15 @@ export type ProduceTask = Readonly<{
   completedQuantity: SafeUint;
   createdWorldTimeMs: WorldTimeDecimal;
 }>;
-export type TaskIntent = ExploreTask | ResourceTask | ProduceTask;
+export type HuntTask = Readonly<{
+  taskId: TaskId;
+  kind: "Hunt";
+  archetypeId: "graymane_boar";
+  requestedKills: SafeUint | null;
+  completedKills: SafeUint;
+  createdWorldTimeMs: WorldTimeDecimal;
+}>;
+export type TaskIntent = ExploreTask | ResourceTask | ProduceTask | HuntTask;
 
 export type ResourceActionSummary = Readonly<{
   kind: "Resource";
@@ -145,8 +154,8 @@ export type ProductionActionSummary = Readonly<{
 export type NonCombatActionSummary = ResourceActionSummary | ProductionActionSummary;
 
 export type Activity = Readonly<{
-  state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
-  phase: "idle" | "exploring" | "acquiring_target" | "moving_to_target" | "resource_action" | "production_action" | "auto_exploring" | "waiting" | "paused";
+  state: "idle" | "planning" | "moving" | "acting" | "combat" | "respawning" | "waiting" | "paused";
+  phase: "idle" | "exploring" | "acquiring_target" | "moving_to_target" | "resource_action" | "production_action" | "auto_exploring" | "combat" | "waiting_respawn" | "waiting" | "paused";
   route: readonly WorldPoint[];
   routePurpose: "explore" | "task_target" | "auto_explore" | null;
   routeIndex: SafeUint;
@@ -173,6 +182,40 @@ export type ResourcePlacementSummary = Readonly<{
   reachable: "reachable" | "unreachable" | "unknown";
 }>;
 
+export type EnemyPlacementSummary = Readonly<{
+  placementId: PlacementId;
+  archetypeId: "graymane_boar";
+  displayName: "灰鬃野猪";
+  mapColor: string;
+  point: WorldPoint;
+  state: "active" | "dead" | "respawning";
+  respawnRemainingMs: WorldTimeDecimal | null;
+  reachable: "reachable" | "unreachable" | "unknown";
+}>;
+
+export type CombatSummary = Readonly<{
+  combatId: string;
+  encounterInstanceId: string;
+  placementId: PlacementId;
+  archetypeId: "graymane_boar";
+  displayName: "灰鬃野猪";
+  triggeredByHunt: boolean;
+  playerHpMicro: WorldTimeDecimal;
+  playerMaxHpMicro: WorldTimeDecimal;
+  enemyHpMicro: WorldTimeDecimal;
+  enemyMaxHpMicro: WorldTimeDecimal;
+  playerNextAttackRemainingMs: WorldTimeDecimal;
+  enemyNextAttackRemainingMs: WorldTimeDecimal;
+  playerHitChancePpm: SafeUint;
+  enemyHitChancePpm: SafeUint;
+  lastAttack: Readonly<{ actor: "player" | "enemy"; hit: boolean; damage: SafeUint }> | null;
+}>;
+
+export type RespawnSummary = Readonly<{
+  deathPosition: WorldPoint;
+  remainingMs: WorldTimeDecimal;
+}>;
+
 export type RevealedChunk = Readonly<{
   chunkKey: ChunkKey;
   chunkX: ChunkDecimal;
@@ -191,29 +234,44 @@ export type OfflineReport = Readonly<{
   taskBefore: TaskIntent | null;
   taskAfter: TaskIntent | null;
   revealedTiles: SafeUint;
-  itemDeltas: readonly Readonly<{ itemId: ItemId; displayName: "纤维" | "软木" | "石料" | "铜矿石" | "绳索" | "破旧斧" | "破旧镐" | "强化斧" | "强化镐"; quantity: SafeInt }>[];
-  skillXpGains: readonly Readonly<{ skillId: "exploration" | SkillId; displayName: "探索" | "采集" | "伐木" | "采矿" | "工艺"; xp: SafeUint }>[];
+  itemDeltas: readonly Readonly<{ itemId: ItemId; displayName: "纤维" | "软木" | "石料" | "铜矿石" | "绳索" | "生皮" | "破旧斧" | "破旧镐" | "强化斧" | "强化镐" | "破旧短刃"; quantity: SafeInt }>[];
+  skillXpGains: readonly Readonly<{ skillId: "exploration" | SkillId; displayName: "探索" | "采集" | "伐木" | "采矿" | "工艺" | "近战" | "潜行"; xp: SafeUint }>[];
+  targetKills: SafeUint;
+  otherKills: SafeUint;
+  deaths: SafeUint;
+  respawns: SafeUint;
+  finalHpMicro: WorldTimeDecimal;
   stopReason: ActivityReason | null;
   committedRevision: SafeUint;
 }>;
 
-export type GameplayReadModelV1 = Readonly<{
-  protocolVersion: 1;
+export type GameplayReadModelV2 = Readonly<{
+  protocolVersion: 2;
   readModelRevision: SafeUint;
   gameplayEpoch: SafeUint;
   startup: "acquiring_lock" | "loading_save" | "new_world" | "processing_offline" | "ready" | "active_in_other_tab" | "incompatible_save" | "storage_blocked";
   generatorVersion: U32 | null;
-  player: Readonly<{ position: WorldPoint; hp: Readonly<{ current: 100; max: 100 }>; combatScope: "not_implemented_phase_2c" }> | null;
+  player: Readonly<{
+    position: WorldPoint;
+    hp: Readonly<{ currentMicro: WorldTimeDecimal; maxMicro: WorldTimeDecimal }>;
+    state: "alive" | "combat" | "dead";
+    naturalRegen: "1% max HP / 10s";
+    revivalGraceRemainingMs: WorldTimeDecimal | null;
+  }> | null;
   task: TaskIntent | null;
   activity: Activity;
   exploration: Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; observationRadiusTiles: SafeUint; revealedTileCount: SafeUint }> | null;
   skills: Readonly<Record<SkillId, Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; skillSpeedBps: SafeUint }>>> | null;
-  inventory: Readonly<{ items: readonly Readonly<{ itemId: ItemId; displayName: "纤维" | "软木" | "石料" | "铜矿石" | "绳索" | "破旧斧" | "破旧镐" | "强化斧" | "强化镐"; category: "material" | "equipment"; quantity: SafeUint }>[] }> | null;
-  equipment: Readonly<Record<ToolSlot, Readonly<{ itemId: ToolItemId; displayName: "破旧斧" | "破旧镐" | "强化斧" | "强化镐"; tier: SafeUint; speedBps: SafeUint }> | null>> | null;
+  inventory: Readonly<{ items: readonly Readonly<{ itemId: ItemId; displayName: "纤维" | "软木" | "石料" | "铜矿石" | "绳索" | "生皮" | "破旧斧" | "破旧镐" | "强化斧" | "强化镐" | "破旧短刃"; category: "material" | "equipment"; quantity: SafeUint }>[] }> | null;
+  equipment: Readonly<Record<ToolSlot, Readonly<{ itemId: ToolItemId; displayName: "破旧斧" | "破旧镐" | "强化斧" | "强化镐"; tier: SafeUint; speedBps: SafeUint }> | null>
+    & { weapon: Readonly<{ itemId: WeaponItemId; displayName: "破旧短刃"; damageMin: 4; damageMax: 6; accuracyBonus: 5; attackIntervalMs: "2500"; requiredMeleeLevel: 1 }> }> | null;
   toolCandidates: readonly Readonly<{ itemId: ToolItemId; displayName: "破旧斧" | "破旧镐" | "强化斧" | "强化镐"; slot: ToolSlot; tier: SafeUint; speedBps: SafeUint; requiredSkillId: ResourceSkillId; requiredLevel: SafeUint; actualLevel: SafeUint; canEquip: boolean; inventoryQuantity: SafeUint; equipped: boolean }>[];
   recipes: readonly Readonly<{ recipeId: RecipeId; displayName: "绳索" | "强化斧" | "强化镐"; skillId: "crafting"; requiredLevel: SafeUint; locked: boolean; inputs: readonly Readonly<{ itemId: MaterialItemId; displayName: "纤维" | "软木" | "石料" | "绳索"; required: SafeUint; available: SafeUint; missing: SafeUint }>[]; output: Readonly<{ itemId: ItemId; displayName: "绳索" | "强化斧" | "强化镐"; quantity: 1 }>; baseDurationMs: WorldTimeDecimal; durationMs: WorldTimeDecimal; skillSpeedBps: SafeUint; totalSpeedBps: SafeUint; xp: SafeUint; station: "handcraft" }>[];
   knownTargetPrototypeIds: readonly ResourcePrototypeId[];
-  map: Readonly<{ revealedChunks: readonly RevealedChunk[]; resourcePlacements: readonly ResourcePlacementSummary[]; selectedDestination: null }>;
+  knownEnemyArchetypeIds: readonly EnemyArchetypeId[];
+  combat: CombatSummary | null;
+  respawn: RespawnSummary | null;
+  map: Readonly<{ revealedChunks: readonly RevealedChunk[]; resourcePlacements: readonly ResourcePlacementSummary[]; enemyPlacements: readonly EnemyPlacementSummary[]; selectedDestination: null }>;
   save: Readonly<{ state: "none" | "saving" | "saved" | "error" | "incompatible" | "active_in_other_tab"; revision: SafeUint; committedWallClockMs: SafeUint | null; localOnly: true; evictionWarning: boolean; lastError: ActivityReason | null }>;
   offlineReport: OfflineReport | null;
 }>;
@@ -226,6 +284,7 @@ export type GameplayCommand =
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Woodcut"; targetPrototypeId: "softwood_tree"; quantity: SafeUint | null }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Mine"; targetPrototypeId: "surface_stone" | "shallow_copper_deposit"; quantity: SafeUint | null }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Produce"; recipeId: RecipeId; requestedQuantity: SafeUint | null }>; wallClockMs: SafeUint }>
+  | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Hunt"; archetypeId: "graymane_boar"; requestedKills: SafeUint | null }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "EquipItem"; commandId: CommandId; itemId: ToolItemId; wallClockMs: SafeUint }>
   | Readonly<{ type: "UnequipSlot"; commandId: CommandId; slot: ToolSlot; wallClockMs: SafeUint }>
   | Readonly<{ type: "CancelTask" | "ExportSave"; commandId: CommandId; wallClockMs: SafeUint }>
@@ -233,30 +292,30 @@ export type GameplayCommand =
   | Readonly<{ type: "ResetSave"; commandId: CommandId; confirmed: true; wallClockMs: SafeUint }>;
 
 export type MainToGameplayWorker =
-  | Readonly<{ type: "initialize"; protocolVersion: 1; requestId: RequestId; generatorVersion: U32; wallClockMs: SafeUint }>
-  | Readonly<{ type: "command"; protocolVersion: 1; requestId: RequestId; command: GameplayCommand }>
-  | Readonly<{ type: "terrain-result"; protocolVersion: 1; terrainRequestId: TerrainRequestId; gameplayEpoch: SafeUint; chunkKey: ChunkKey; chunkX: ChunkDecimal; chunkY: ChunkDecimal; generatorVersion: U32; baseTerrain: ArrayBuffer }>
-  | Readonly<{ type: "terrain-error"; protocolVersion: 1; terrainRequestId: TerrainRequestId; gameplayEpoch: SafeUint; code: "terrain/generation_failed" | "terrain/payload_invalid"; transient: boolean; diagnosticId: DiagnosticId }>
-  | Readonly<{ type: "flush"; protocolVersion: 1; requestId: RequestId; wallClockMs: SafeUint }>
-  | Readonly<{ type: "shutdown"; protocolVersion: 1; requestId: RequestId }>;
+  | Readonly<{ type: "initialize"; protocolVersion: 2; requestId: RequestId; generatorVersion: U32; wallClockMs: SafeUint }>
+  | Readonly<{ type: "command"; protocolVersion: 2; requestId: RequestId; command: GameplayCommand }>
+  | Readonly<{ type: "terrain-result"; protocolVersion: 2; terrainRequestId: TerrainRequestId; gameplayEpoch: SafeUint; chunkKey: ChunkKey; chunkX: ChunkDecimal; chunkY: ChunkDecimal; generatorVersion: U32; baseTerrain: ArrayBuffer }>
+  | Readonly<{ type: "terrain-error"; protocolVersion: 2; terrainRequestId: TerrainRequestId; gameplayEpoch: SafeUint; code: "terrain/generation_failed" | "terrain/payload_invalid"; transient: boolean; diagnosticId: DiagnosticId }>
+  | Readonly<{ type: "flush"; protocolVersion: 2; requestId: RequestId; wallClockMs: SafeUint }>
+  | Readonly<{ type: "shutdown"; protocolVersion: 2; requestId: RequestId }>;
 
 export type GameplayWorkerToMain =
-  | Readonly<{ type: "worker-ready"; protocolVersion: 1 }>
-  | Readonly<{ type: "request-result"; protocolVersion: 1; requestId: RequestId; operation: "initialize" | "flush" | "shutdown"; status: "accepted" | "rejected"; readModelRevision: SafeUint; saveRevision: SafeUint; error: LifecycleError | null }>
-  | Readonly<{ type: "protocol-error"; protocolVersion: 1; requestId: RequestId | null; error: ProtocolError; readModelRevision: SafeUint; saveRevision: SafeUint }>
-  | Readonly<{ type: "terrain-request"; protocolVersion: 1; terrainRequestId: TerrainRequestId; gameplayEpoch: SafeUint; readModelRevision: SafeUint; seed: SeedDecimal; chunkKey: ChunkKey; chunkX: ChunkDecimal; chunkY: ChunkDecimal }>
-  | Readonly<{ type: "read-model"; protocolVersion: 1; readModel: GameplayReadModelV1 }>
-  | Readonly<{ type: "command-result"; protocolVersion: 1; requestId: RequestId; commandId: CommandId; status: "accepted" | "rejected"; readModelRevision: SafeUint; saveRevision: SafeUint; error: CommandError | null }>
-  | Readonly<{ type: "offline-progress"; protocolVersion: 1; claimId: ClaimId; processedDurationMs: UnsignedDecimal; creditedDurationMs: UnsignedDecimal; sliceMaxMs: number }>
-  | Readonly<{ type: "export-ready"; protocolVersion: 1; requestId: RequestId; commandId: CommandId; saveRevision: SafeUint; filename: string; backupUtf8: ArrayBuffer }>
-  | Readonly<{ type: "fatal"; protocolVersion: 1; error: FatalError; readModelRevision: SafeUint; saveRevision: SafeUint }>;
+  | Readonly<{ type: "worker-ready"; protocolVersion: 2 }>
+  | Readonly<{ type: "request-result"; protocolVersion: 2; requestId: RequestId; operation: "initialize" | "flush" | "shutdown"; status: "accepted" | "rejected"; readModelRevision: SafeUint; saveRevision: SafeUint; error: LifecycleError | null }>
+  | Readonly<{ type: "protocol-error"; protocolVersion: 2; requestId: RequestId | null; error: ProtocolError; readModelRevision: SafeUint; saveRevision: SafeUint }>
+  | Readonly<{ type: "terrain-request"; protocolVersion: 2; terrainRequestId: TerrainRequestId; gameplayEpoch: SafeUint; readModelRevision: SafeUint; seed: SeedDecimal; chunkKey: ChunkKey; chunkX: ChunkDecimal; chunkY: ChunkDecimal }>
+  | Readonly<{ type: "read-model"; protocolVersion: 2; readModel: GameplayReadModelV2 }>
+  | Readonly<{ type: "command-result"; protocolVersion: 2; requestId: RequestId; commandId: CommandId; status: "accepted" | "rejected"; readModelRevision: SafeUint; saveRevision: SafeUint; error: CommandError | null }>
+  | Readonly<{ type: "offline-progress"; protocolVersion: 2; claimId: ClaimId; processedDurationMs: UnsignedDecimal; creditedDurationMs: UnsignedDecimal; sliceMaxMs: number }>
+  | Readonly<{ type: "export-ready"; protocolVersion: 2; requestId: RequestId; commandId: CommandId; saveRevision: SafeUint; filename: string; backupUtf8: ArrayBuffer }>
+  | Readonly<{ type: "fatal"; protocolVersion: 2; error: FatalError; readModelRevision: SafeUint; saveRevision: SafeUint }>;
 
 const UNSIGNED_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const SIGNED_DECIMAL = /^(?:0|-?[1-9][0-9]*)$/;
 const REQUEST_ID = /^req:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
 const COMMAND_ID = /^cmd:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
 const TASK_ID = /^task:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
-const PLACEMENT_ID = /^place:(?:(?:wild-fiber|softwood-tree|surface-stone|shallow-copper-deposit):ambient:(?:0|-?[1-9][0-9]*):(?:0|-?[1-9][0-9]*)|wild-fiber:guarantee:(?:initial-observation|ring-a|ring-b)|(?:softwood-tree|surface-stone):guarantee:(?:initial-observation|ring-a)|shallow-copper-deposit:guarantee:boundary-a)$/;
+const PLACEMENT_ID = /^place:(?:(?:wild-fiber|softwood-tree|surface-stone|shallow-copper-deposit|graymane-boar):ambient:(?:0|-?[1-9][0-9]*):(?:0|-?[1-9][0-9]*)|wild-fiber:guarantee:(?:initial-observation|ring-a|ring-b)|(?:softwood-tree|surface-stone):guarantee:(?:initial-observation|ring-a)|shallow-copper-deposit:guarantee:boundary-a|graymane-boar:guarantee:learning-(?:a|b|c))$/;
 const ACTION_ID = /^action:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const TERRAIN_REQUEST_ID = /^terrain:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const CLAIM_ID = /^claim:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
@@ -269,14 +328,16 @@ const MAX_NAV = WORLD_POINT_NAV_MAX;
 const MIN_CHUNK = CHUNK_COORDINATE_MIN;
 const MAX_CHUNK = CHUNK_COORDINATE_MAX;
 const RESOURCE_PROTOTYPE_IDS = ["wild_fiber", "softwood_tree", "surface_stone", "shallow_copper_deposit"] as const;
-const MATERIAL_ITEM_IDS = ["fiber", "softwood", "stone", "copper_ore", "rope"] as const;
+const MATERIAL_ITEM_IDS = ["fiber", "softwood", "stone", "copper_ore", "rope", "raw_hide"] as const;
 const TOOL_ITEM_IDS = ["worn_axe", "worn_pickaxe", "reinforced_axe", "reinforced_pickaxe"] as const;
+const WEAPON_ITEM_IDS = ["worn_blade"] as const;
 const RESOURCE_SKILL_IDS = ["gathering", "woodcutting", "mining"] as const;
-const SKILL_IDS = [...RESOURCE_SKILL_IDS, "crafting"] as const;
+const SKILL_IDS = [...RESOURCE_SKILL_IDS, "crafting", "melee", "stealth"] as const;
 const RECIPE_IDS = ["rope", "reinforced_axe", "reinforced_pickaxe"] as const;
 const ITEM_DISPLAY_NAMES = {
-  fiber: "纤维", softwood: "软木", stone: "石料", copper_ore: "铜矿石", rope: "绳索",
+  fiber: "纤维", softwood: "软木", stone: "石料", copper_ore: "铜矿石", rope: "绳索", raw_hide: "生皮",
   worn_axe: "破旧斧", worn_pickaxe: "破旧镐", reinforced_axe: "强化斧", reinforced_pickaxe: "强化镐",
+  worn_blade: "破旧短刃",
 } as const satisfies Record<ItemId, string>;
 const TOOL_CONTRACTS = {
   worn_axe: { slot: "axe", tier: 0, speedBps: 0, requiredSkillId: "woodcutting", requiredLevel: 1 },
@@ -301,12 +362,20 @@ function isResourcePrototype(value: unknown): value is ResourcePrototypeId {
   return typeof value === "string" && (RESOURCE_PROTOTYPE_IDS as readonly string[]).includes(value);
 }
 
+function isEnemyArchetype(value: unknown): value is EnemyArchetypeId {
+  return value === "graymane_boar";
+}
+
 function isMaterialItem(value: unknown): value is MaterialItemId {
   return typeof value === "string" && (MATERIAL_ITEM_IDS as readonly string[]).includes(value);
 }
 
 function isToolItem(value: unknown): value is ToolItemId {
   return typeof value === "string" && (TOOL_ITEM_IDS as readonly string[]).includes(value);
+}
+
+function isWeaponItem(value: unknown): value is WeaponItemId {
+  return typeof value === "string" && (WEAPON_ITEM_IDS as readonly string[]).includes(value);
 }
 
 function isResourceSkill(value: unknown): value is ResourceSkillId {
@@ -322,7 +391,7 @@ function isRecipe(value: unknown): value is RecipeId {
 }
 
 function isItem(value: unknown): value is ItemId {
-  return isMaterialItem(value) || isToolItem(value);
+  return isMaterialItem(value) || isToolItem(value) || isWeaponItem(value);
 }
 
 function expectedDurationMs(baseDurationMs: string, speedBps: number): string {
@@ -455,6 +524,11 @@ export function isGameplayCommand(value: unknown): value is GameplayCommand {
           && isRecipe(task.recipeId)
           && (task.requestedQuantity === null || (isSafeUint(task.requestedQuantity) && task.requestedQuantity > 0));
       }
+      if (task.kind === "Hunt") {
+        return hasExactKeys(task, ["kind", "archetypeId", "requestedKills"])
+          && isEnemyArchetype(task.archetypeId)
+          && (task.requestedKills === null || (isSafeUint(task.requestedKills) && task.requestedKills > 0));
+      }
       if (task.mode === "continuous") return hasExactKeys(task, ["kind", "mode", "destination"]) && task.kind === "Explore" && task.destination === null;
       return hasExactKeys(task, ["kind", "mode", "destination"]) && task.kind === "Explore" && task.mode === "destination" && isWorldPoint(task.destination);
     }
@@ -527,13 +601,13 @@ function isProtocolError(value: unknown): value is ProtocolError {
   if (!hasExactKeys(value, ["code", "params", "diagnosticId"]) || !isDiagnosticId(value.diagnosticId)) return false;
   if (value.code === "protocol/unknown_message" || value.code === "protocol/invalid_message") return value.params === null;
   return value.code === "protocol/version_mismatch" && hasExactKeys(value.params, ["expected", "actual"])
-    && value.params.expected === 1 && (value.params.actual === null || isU32(value.params.actual));
+    && value.params.expected === 2 && (value.params.actual === null || isU32(value.params.actual));
 }
 
 function isCommandError(value: unknown): value is CommandError {
   if (!hasExactKeys(value, ["code", "params", "diagnosticId"]) || typeof value.code !== "string") return false;
   if (value.code === "command/id_conflict") return hasExactKeys(value.params, ["commandId"]) && isCommandId(value.params.commandId) && value.diagnosticId === null;
-  if (["command/invalid_seed", "command/unknown_target_prototype", "command/content_placement_failed", "command/item_unavailable", "command/invalid_equipment", "save/not_found"].includes(value.code)) return value.params === null && value.diagnosticId === null;
+  if (["command/invalid_seed", "command/unknown_target_prototype", "command/content_placement_failed", "command/item_unavailable", "command/invalid_equipment", "command/combat_locked", "save/not_found"].includes(value.code)) return value.params === null && value.diagnosticId === null;
   if (value.code === "command/skill_level_too_low") {
     return hasExactKeys(value.params, ["prototypeId", "skillId", "requiredLevel", "actualLevel"])
       && isResourcePrototype(value.params.prototypeId) && isResourceSkill(value.params.skillId)
@@ -651,8 +725,17 @@ export function isProduceTask(value: unknown): value is ProduceTask {
     && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
 }
 
+export function isHuntTask(value: unknown): value is HuntTask {
+  return hasExactKeys(value, ["taskId", "kind", "archetypeId", "requestedKills", "completedKills", "createdWorldTimeMs"])
+    && isTaskId(value.taskId) && value.kind === "Hunt" && value.archetypeId === "graymane_boar"
+    && (value.requestedKills === null || (isSafeUint(value.requestedKills) && value.requestedKills > 0))
+    && isSafeUint(value.completedKills)
+    && (value.requestedKills === null || value.completedKills <= value.requestedKills)
+    && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
+}
+
 export function isTaskIntent(value: unknown): value is TaskIntent {
-  return isExploreTask(value) || isGatherTask(value) || isWoodcutTask(value) || isMineTask(value) || isProduceTask(value);
+  return isExploreTask(value) || isGatherTask(value) || isWoodcutTask(value) || isMineTask(value) || isProduceTask(value) || isHuntTask(value);
 }
 
 function isNonCombatActionSummary(value: unknown): value is NonCombatActionSummary {
@@ -672,8 +755,8 @@ function isNonCombatActionSummary(value: unknown): value is NonCombatActionSumma
 
 function isActivity(value: unknown): value is Activity {
   if (!hasExactKeys(value, ["state", "phase", "route", "routePurpose", "routeIndex", "etaMs", "progressPermille", "targetPlacementId", "action", "reason"]) || !Array.isArray(value.route)) return false;
-  if (!["idle", "planning", "moving", "acting", "waiting", "paused"].includes(value.state as string)
-    || !["idle", "exploring", "acquiring_target", "moving_to_target", "resource_action", "production_action", "auto_exploring", "waiting", "paused"].includes(value.phase as string)
+  if (!["idle", "planning", "moving", "acting", "combat", "respawning", "waiting", "paused"].includes(value.state as string)
+    || !["idle", "exploring", "acquiring_target", "moving_to_target", "resource_action", "production_action", "auto_exploring", "combat", "waiting_respawn", "waiting", "paused"].includes(value.phase as string)
     || value.route.length > 65_536 || !value.route.every(isWorldPoint)) return false;
   if (!(value.routePurpose === null || ["explore", "task_target", "auto_explore"].includes(value.routePurpose as string))) return false;
   if (!isSafeUint(value.routeIndex) || (value.route.length === 0 ? value.routeIndex !== 0 : value.routeIndex >= value.route.length)) return false;
@@ -723,7 +806,7 @@ function isRevealedChunk(value: unknown): value is RevealedChunk {
 }
 
 export function isOfflineReport(value: unknown): value is OfflineReport {
-  return hasExactKeys(value, ["claimId", "rawElapsedMs", "clockSkew", "creditedDurationMs", "discardedDurationMs", "fromWorldTimeMs", "toWorldTimeMs", "taskBefore", "taskAfter", "revealedTiles", "itemDeltas", "skillXpGains", "stopReason", "committedRevision"])
+  return hasExactKeys(value, ["claimId", "rawElapsedMs", "clockSkew", "creditedDurationMs", "discardedDurationMs", "fromWorldTimeMs", "toWorldTimeMs", "taskBefore", "taskAfter", "revealedTiles", "itemDeltas", "skillXpGains", "targetKills", "otherKills", "deaths", "respawns", "finalHpMicro", "stopReason", "committedRevision"])
     && isClaimId(value.claimId) && typeof value.rawElapsedMs === "number" && Number.isSafeInteger(value.rawElapsedMs)
     && (value.clockSkew === "none" || value.clockSkew === "backward") && isCanonicalUnsignedDecimal(value.creditedDurationMs)
     && isCanonicalUnsignedDecimal(value.discardedDurationMs) && isCanonicalUnsignedDecimal(value.fromWorldTimeMs)
@@ -734,21 +817,27 @@ export function isOfflineReport(value: unknown): value is OfflineReport {
       && Number.isSafeInteger(delta.quantity) && delta.quantity !== 0)
     && Array.isArray(value.skillXpGains) && value.skillXpGains.every((gain: unknown) => hasExactKeys(gain, ["skillId", "displayName", "xp"])
       && (gain.skillId === "exploration" || isSkill(gain.skillId)) && typeof gain.displayName === "string" && isSafeUint(gain.xp) && gain.xp > 0)
+    && isSafeUint(value.targetKills) && isSafeUint(value.otherKills) && isSafeUint(value.deaths) && isSafeUint(value.respawns)
+    && isCanonicalUnsignedDecimal(value.finalHpMicro)
     && (value.stopReason === null || isActivityReason(value.stopReason)) && isSafeUint(value.committedRevision)
     && (value.clockSkew !== "backward" || (value.rawElapsedMs < 0 && value.creditedDurationMs === "0" && value.discardedDurationMs === "0" && value.toWorldTimeMs === value.fromWorldTimeMs));
 }
 
-export function isGameplayReadModel(value: unknown): value is GameplayReadModelV1 {
-  if (!hasExactKeys(value, ["protocolVersion", "readModelRevision", "gameplayEpoch", "startup", "generatorVersion", "player", "task", "activity", "exploration", "skills", "inventory", "equipment", "toolCandidates", "recipes", "knownTargetPrototypeIds", "map", "save", "offlineReport"])) return false;
-  if (value.protocolVersion !== 1 || !isSafeUint(value.readModelRevision) || !isSafeUint(value.gameplayEpoch)
+export function isGameplayReadModel(value: unknown): value is GameplayReadModelV2 {
+  if (!hasExactKeys(value, ["protocolVersion", "readModelRevision", "gameplayEpoch", "startup", "generatorVersion", "player", "task", "activity", "exploration", "skills", "inventory", "equipment", "toolCandidates", "recipes", "knownTargetPrototypeIds", "knownEnemyArchetypeIds", "combat", "respawn", "map", "save", "offlineReport"])) return false;
+  if (value.protocolVersion !== 2 || !isSafeUint(value.readModelRevision) || !isSafeUint(value.gameplayEpoch)
     || !["acquiring_lock", "loading_save", "new_world", "processing_offline", "ready", "active_in_other_tab", "incompatible_save", "storage_blocked"].includes(value.startup as string)
     || !(value.generatorVersion === null || isU32(value.generatorVersion))) return false;
-  if (value.player !== null && !(hasExactKeys(value.player, ["position", "hp", "combatScope"]) && isWorldPoint(value.player.position)
-    && hasExactKeys(value.player.hp, ["current", "max"]) && value.player.hp.current === 100 && value.player.hp.max === 100
-    && value.player.combatScope === "not_implemented_phase_2c")) return false;
+  if (value.player !== null && !(hasExactKeys(value.player, ["position", "hp", "state", "naturalRegen", "revivalGraceRemainingMs"])
+    && isWorldPoint(value.player.position) && hasExactKeys(value.player.hp, ["currentMicro", "maxMicro"])
+    && isCanonicalUnsignedDecimal(value.player.hp.currentMicro) && isCanonicalUnsignedDecimal(value.player.hp.maxMicro)
+    && BigInt(value.player.hp.currentMicro) <= BigInt(value.player.hp.maxMicro)
+    && ["alive", "combat", "dead"].includes(value.player.state as string)
+    && value.player.naturalRegen === "1% max HP / 10s"
+    && (value.player.revivalGraceRemainingMs === null || isCanonicalUnsignedDecimal(value.player.revivalGraceRemainingMs)))) return false;
   if (!(value.task === null || isTaskIntent(value.task)) || !isActivity(value.activity)) return false;
   if (value.activity.action?.kind === "Produce" && !(value.task?.kind === "Produce" && value.task.recipeId === value.activity.action.recipeId)) return false;
-  if (value.activity.action?.kind === "Resource" && !(value.task !== null && value.task.kind !== "Explore" && value.task.kind !== "Produce"
+  if (value.activity.action?.kind === "Resource" && !(value.task !== null && value.task.kind !== "Explore" && value.task.kind !== "Produce" && value.task.kind !== "Hunt"
     && value.task.targetPrototypeId === value.activity.action.prototypeId)) return false;
   if (value.activity.reason?.code === "MaterialsMissing" && !(value.task?.kind === "Produce"
     && value.task.recipeId === value.activity.reason.params.recipeId)) return false;
@@ -757,7 +846,7 @@ export function isGameplayReadModel(value: unknown): value is GameplayReadModelV
     && (value.exploration.nextLevelXp === null || isSafeUint(value.exploration.nextLevelXp)) && isSafeUint(value.exploration.observationRadiusTiles)
     && isSafeUint(value.exploration.revealedTileCount))) return false;
   if (value.skills !== null) {
-    if (!hasExactKeys(value.skills, ["gathering", "woodcutting", "mining", "crafting"])) return false;
+    if (!hasExactKeys(value.skills, ["gathering", "woodcutting", "mining", "crafting", "melee", "stealth"])) return false;
     for (const skillId of SKILL_IDS) {
       const skill = value.skills[skillId];
       if (!hasExactKeys(skill, ["level", "totalXp", "currentLevelXp", "nextLevelXp", "skillSpeedBps"])
@@ -766,13 +855,13 @@ export function isGameplayReadModel(value: unknown): value is GameplayReadModelV
     }
   }
   if (value.inventory !== null && !(hasExactKeys(value.inventory, ["items"]) && Array.isArray(value.inventory.items)
-    && value.inventory.items.length <= 9 && value.inventory.items.every((item: unknown) => hasExactKeys(item, ["itemId", "displayName", "category", "quantity"])
+    && value.inventory.items.length <= 10 && value.inventory.items.every((item: unknown) => hasExactKeys(item, ["itemId", "displayName", "category", "quantity"])
       && (isMaterialItem(item.itemId) || isToolItem(item.itemId)) && (item.category === "material" || item.category === "equipment")
       && (isMaterialItem(item.itemId) ? item.category === "material" : item.category === "equipment")
       && item.displayName === ITEM_DISPLAY_NAMES[item.itemId] && isSafeUint(item.quantity) && item.quantity > 0)
     && new Set(value.inventory.items.map((item) => item.itemId)).size === value.inventory.items.length)) return false;
   if (value.equipment !== null) {
-    if (!hasExactKeys(value.equipment, ["axe", "pickaxe"])) return false;
+    if (!hasExactKeys(value.equipment, ["axe", "pickaxe", "weapon"])) return false;
     const equipment = value.equipment;
     for (const slot of ["axe", "pickaxe"] as const) {
       const equipped = equipment[slot];
@@ -783,12 +872,17 @@ export function isGameplayReadModel(value: unknown): value is GameplayReadModelV
           || equipped.tier !== expected.tier || equipped.speedBps !== expected.speedBps) return false;
       }
     }
+    if (!(hasExactKeys(value.equipment.weapon, ["itemId", "displayName", "damageMin", "damageMax", "accuracyBonus", "attackIntervalMs", "requiredMeleeLevel"])
+      && value.equipment.weapon.itemId === "worn_blade" && value.equipment.weapon.displayName === "破旧短刃"
+      && value.equipment.weapon.damageMin === 4 && value.equipment.weapon.damageMax === 6
+      && value.equipment.weapon.accuracyBonus === 5 && value.equipment.weapon.attackIntervalMs === "2500"
+      && value.equipment.weapon.requiredMeleeLevel === 1)) return false;
   }
   if (!Array.isArray(value.toolCandidates) || (value.player === null ? value.toolCandidates.length !== 0 : value.toolCandidates.length !== 4)) return false;
   if (value.player !== null && (value.skills === null || value.inventory === null || value.equipment === null)) return false;
-  const readSkills = value.skills as GameplayReadModelV1["skills"];
-  const readInventory = value.inventory as GameplayReadModelV1["inventory"];
-  const readEquipment = value.equipment as GameplayReadModelV1["equipment"];
+  const readSkills = value.skills as GameplayReadModelV2["skills"];
+  const readInventory = value.inventory as GameplayReadModelV2["inventory"];
+  const readEquipment = value.equipment as GameplayReadModelV2["equipment"];
   if (value.toolCandidates.some((candidate: unknown, index: number) => {
     if (!(hasExactKeys(candidate, ["itemId", "displayName", "slot", "tier", "speedBps", "requiredSkillId", "requiredLevel", "actualLevel", "canEquip", "inventoryQuantity", "equipped"])
       && isToolItem(candidate.itemId))) return true;
@@ -830,9 +924,33 @@ export function isGameplayReadModel(value: unknown): value is GameplayReadModelV
   })) return false;
   if (!Array.isArray(value.knownTargetPrototypeIds) || value.knownTargetPrototypeIds.some((id: unknown) => !isResourcePrototype(id))
     || new Set(value.knownTargetPrototypeIds).size !== value.knownTargetPrototypeIds.length) return false;
-  if (!(hasExactKeys(value.map, ["revealedChunks", "resourcePlacements", "selectedDestination"]) && Array.isArray(value.map.revealedChunks)
+  if (!Array.isArray(value.knownEnemyArchetypeIds) || value.knownEnemyArchetypeIds.some((id: unknown) => !isEnemyArchetype(id))
+    || new Set(value.knownEnemyArchetypeIds).size !== value.knownEnemyArchetypeIds.length) return false;
+  if (value.combat !== null && !(hasExactKeys(value.combat, ["combatId", "encounterInstanceId", "placementId", "archetypeId", "displayName", "triggeredByHunt", "playerHpMicro", "playerMaxHpMicro", "enemyHpMicro", "enemyMaxHpMicro", "playerNextAttackRemainingMs", "enemyNextAttackRemainingMs", "playerHitChancePpm", "enemyHitChancePpm", "lastAttack"])
+    && typeof value.combat.combatId === "string" && value.combat.combatId.startsWith("combat:")
+    && typeof value.combat.encounterInstanceId === "string" && isPlacementId(value.combat.placementId)
+    && value.combat.archetypeId === "graymane_boar" && value.combat.displayName === "灰鬃野猪"
+    && typeof value.combat.triggeredByHunt === "boolean"
+    && [value.combat.playerHpMicro, value.combat.playerMaxHpMicro, value.combat.enemyHpMicro, value.combat.enemyMaxHpMicro, value.combat.playerNextAttackRemainingMs, value.combat.enemyNextAttackRemainingMs]
+      .every((decimal) => isCanonicalUnsignedDecimal(decimal))
+    && isSafeUint(value.combat.playerHitChancePpm) && value.combat.playerHitChancePpm <= 1_000_000
+    && isSafeUint(value.combat.enemyHitChancePpm) && value.combat.enemyHitChancePpm <= 1_000_000
+    && (value.combat.lastAttack === null || (hasExactKeys(value.combat.lastAttack, ["actor", "hit", "damage"])
+      && (value.combat.lastAttack.actor === "player" || value.combat.lastAttack.actor === "enemy")
+      && typeof value.combat.lastAttack.hit === "boolean" && isSafeUint(value.combat.lastAttack.damage))))) return false;
+  if (value.respawn !== null && !(hasExactKeys(value.respawn, ["deathPosition", "remainingMs"])
+    && isWorldPoint(value.respawn.deathPosition) && isCanonicalUnsignedDecimal(value.respawn.remainingMs))) return false;
+  if (value.player !== null && ((value.player.state === "combat") !== (value.combat !== null)
+    || (value.player.state === "dead") !== (value.respawn !== null))) return false;
+  if (!(hasExactKeys(value.map, ["revealedChunks", "resourcePlacements", "enemyPlacements", "selectedDestination"]) && Array.isArray(value.map.revealedChunks)
     && value.map.revealedChunks.every(isRevealedChunk) && Array.isArray(value.map.resourcePlacements)
-    && value.map.resourcePlacements.every(isResourcePlacementSummary) && value.map.selectedDestination === null)) return false;
+    && value.map.resourcePlacements.every(isResourcePlacementSummary) && Array.isArray(value.map.enemyPlacements)
+    && value.map.enemyPlacements.every((enemy: unknown) => hasExactKeys(enemy, ["placementId", "archetypeId", "displayName", "mapColor", "point", "state", "respawnRemainingMs", "reachable"])
+      && isPlacementId(enemy.placementId) && enemy.archetypeId === "graymane_boar" && enemy.displayName === "灰鬃野猪"
+      && typeof enemy.mapColor === "string" && isWorldPoint(enemy.point) && ["active", "dead", "respawning"].includes(enemy.state as string)
+      && (enemy.respawnRemainingMs === null || isCanonicalUnsignedDecimal(enemy.respawnRemainingMs))
+      && ["reachable", "unreachable", "unknown"].includes(enemy.reachable as string))
+    && value.map.selectedDestination === null)) return false;
   if (!(hasExactKeys(value.save, ["state", "revision", "committedWallClockMs", "localOnly", "evictionWarning", "lastError"])
     && ["none", "saving", "saved", "error", "incompatible", "active_in_other_tab"].includes(value.save.state as string)
     && isSafeUint(value.save.revision) && (value.save.committedWallClockMs === null || isSafeUint(value.save.committedWallClockMs))
@@ -844,7 +962,7 @@ export function isGameplayReadModel(value: unknown): value is GameplayReadModelV
 export function isGameplayWorkerToMain(value: unknown): value is GameplayWorkerToMain {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const message = value as Record<string, unknown>;
-  if (message.protocolVersion !== 1) return false;
+  if (message.protocolVersion !== 2) return false;
   switch (message.type) {
     case "worker-ready":
       return hasExactKeys(message, ["type", "protocolVersion"]);

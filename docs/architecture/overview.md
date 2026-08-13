@@ -19,11 +19,11 @@ World seed + generator version + chunk coordinates
                  完整静态    可选动态增强
 ```
 
-当前系统同时包含确定性地形生成、浏览器 streaming/rendering，以及阶段 1 至 2C 的玩家世界状态、导航、生活技能任务和本地持久化。生成、玩家世界状态、玩法模拟和渲染保持分层；尚未实现的战斗、死亡与叙事也不得进入生成器或纹理语义。
+当前系统同时包含确定性地形生成、浏览器 streaming/rendering，以及阶段 1 至 3A 的玩家世界状态、导航、生活技能任务、T1 连续战斗和本地持久化。生成、玩家世界状态、玩法模拟和渲染保持分层；战斗与死亡属于玩法模拟，尚未实现的叙事也不得进入生成器或纹理语义。
 
 ## 玩法运行时
 
-[存档与离线结算协议](../requirements/save-offline-protocol.md)接受的以下运行时已用于阶段 1 至 2C：
+[存档与离线结算协议](../requirements/save-offline-protocol.md)接受的以下运行时已用于阶段 1 至 3A：
 
 ```text
 main thread UI / rendering
@@ -79,7 +79,7 @@ gameplay worker 是玩法状态、事件时间、离线快进和存档的唯一�
 
 - 世界生成：[世界生成架构](world-generation.md)。
 - 玩法与玩家状态：[玩法状态边界](gameplay-state.md)。
-- 存档与离线恢复：[存档与离线结算协议](../requirements/save-offline-protocol.md)；阶段 2C 精确增量见[阶段 2C 运行时契约](../specifications/phase-2c-runtime-contracts.md)。
+- 存档与离线恢复：[存档与离线结算协议](../requirements/save-offline-protocol.md)；当前精确增量见[阶段 3A 运行时契约](../specifications/phase-3a-runtime-contracts.md)。
 - 自由向量移动、导航、迷雾与目标索取：[移动协议](../requirements/movement-navigation-protocol.md)（Accepted；fixtures 与 benchmark 属于实现验收）。
 - Worker、streaming 与渲染：[Streaming 与渲染](streaming-rendering.md)。
 - 纹理文件：[Terrain Sheet v3](../specifications/terrain-sheet-v3.md)。
@@ -87,6 +87,6 @@ gameplay worker 是玩法状态、事件时间、离线快进和存档的唯一�
 
 ## 当前限制
 
-- 阶段 1 至 2C 只覆盖探索、采集、伐木、采矿、手工工艺和工具升级。战斗、死亡、叙事、工作站与锻造尚未实现。
+- 阶段 1 至 3A 覆盖探索、采集、伐木、采矿、手工工艺、工具升级、单一 T1 狩猎、潜行、连续近战和死亡复活。T2、战斗装备生产、叙事、工作站与锻造尚未实现。
 - gameplay 坐标使用有边界的 canonical integer `WorldPoint`；renderer 只接收 camera-relative `Number`/float。完整范围见移动协议与边界 fixture。
 - 当前实现状态、已知技术债和未实现范围以[当前状态](../product/current-state.md)为准。

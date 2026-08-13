@@ -10,5 +10,6 @@ Decision Record 保存待确认或已接受的产品与架构取舍。Proposed �
 | [0004](0004-gathering-content-placement.md) | Accepted | 阶段 2A 资源内容采用绝对 content cell 与营地保证层 |
 | [0005](0005-resource-actions-and-tools.md) | Accepted | 阶段 2B 保留显式任务类别并共享资源执行器；只实现实际使用的斧与镐槽位 |
 | [0006](0006-crafting-tool-upgrade-slice.md) | Accepted | 阶段 2C 只交付手工工艺与工具升级闭环；工作站和锻造延后 |
+| [0007](0007-t1-hunting-continuous-combat.md) | Accepted | 阶段 3A 用单一 T1 敌人交付潜行、狩猎、连续战斗与死亡复活闭环 |
 
 新增决策使用[决策模板](../templates/decision.md)。一般情况下，已发布决策变化时新增记录并标记 supersedes/superseded by。MVP/demo 产品需求例外：负责人确认新规则后，直接修订需求真源并删除旧规则，不为了旧需求增加兼容层；Decision Record 只保留仍有解释价值的取舍。

@@ -90,7 +90,7 @@ player_damage_max = floor(武器 damage_max × level_damage_multiplier)
 
 `近战` 等级只影响内容准入、近战命中和近战伤害。它不影响攻速、最大生命、闪避、护甲或恢复，避免一个技能同时放大全部战斗维度。
 
-本文没有给出角色基础 `armor`。首轮 `hunter_coat` 防具由[物品与装备系统](item-equipment.md#生产装备)定义；不能从装备名称推断未在内容表声明的属性。
+角色首轮基础 `armor = 0`。`hunter_coat` 防具由[物品与装备系统](item-equipment.md#生产装备)定义；不能从装备名称推断未在内容表声明的属性。
 
 ## 命中
 
@@ -262,7 +262,7 @@ detect_chance = clamp(
 
 ### 敌人
 
-| 属性 | T1 狩猎目标 | T2 边界威胁 |
+| 属性 | `graymane_boar`（灰鬃野猪） | T2 边界威胁 |
 |---|---:|---:|
 | `max_hp` | `30` | `70` |
 | `accuracy` | `14` | `24` |
@@ -273,6 +273,8 @@ detect_chance = clamp(
 | `perception` | `12` | `25` |
 | `base_combat_xp` | `30` | `80` |
 | 重生时间 | `180s` | `300s` |
+
+灰鬃野猪 guaranteed drop entry 固定为 `loot:graymane_boar:raw_hide:guaranteed`，产出 `raw_hide ×1`。完整通过其非狩猎威胁区固定提供 Stealth XP `12`。阶段 3A 在学习圈保证三个可达巢点，并把安全圈内 ambient enemy 排除。
 
 设计目标是：`worn_blade` 对单个 T1 具有高成功率，但连续战斗累积伤势；`worn_blade` 挑战 T2 基本失败；`copper_blade` 显著改善对 T2 的胜率；增加 `hunter_coat` 后形成更安全的边界挑战。概率上下限意味着任何有限样例都不能证明必胜。该目标必须通过确定性模拟、概率分析和包含路径恢复的端到端模拟验证。
 
@@ -400,7 +402,7 @@ base
 ## 实现、内容与验证工作
 
 - 战斗实现专项须在编码前补齐 `raw_damage` 分布、随机数到闭区间整数的无偏映射，以及连续恢复、属性、效果和存档的数值精度与取整 contract。
-- 内容专项须在内容表声明角色基础 `armor`、T1/T2 正式名称、掉落内容和叙事必得标识；装备属性遵守[物品与装备系统](item-equipment.md)。
+- T2 内容专项须声明正式名称、掉落内容和叙事必得标识；阶段 3A 的角色基础 `armor`、T1 名称与掉落已经封板。装备属性遵守[物品与装备系统](item-equipment.md)。
 - 效果专项若引入负攻速效果，须先写明合法范围、分母下限和叠加规则；首个无此效果的切片不能产生未定义行为。
 - movement、通行、迷雾、目标索取、路径恢复和中断重放直接遵守已接受的[自由向量移动协议](movement-navigation-protocol.md)。
 - 验证专项须归档模拟脚本、gameplay seed、完整 fixtures、结果格式，以及包含真实路径恢复、敌人密度、重生和自动探索的端到端平衡验证。

@@ -150,7 +150,7 @@ production task 先验证 recipe/level/equipment，再检查材料；材料足�
 
 | 原型 | 区域与行为 | 重生 | 待决内容 |
 |---|---|---:|---|
-| T1 狩猎目标 | 分布在学习圈；可以主动发现玩家；目标体验是可用初始武器击杀；guaranteed drop `raw_hide ×1` | `180s` | 正式名称、属性和掉落 entry ID |
+| `graymane_boar`（灰鬃野猪） | 学习圈三个保证巢点并允许 ambient placement；可以主动发现玩家；guaranteed drop `raw_hide ×1` | `180s` | Accepted 首轮属性见战斗数值系统；掉落 entry 为 `loot:graymane_boar:raw_hide:guaranteed` |
 | T2 边界威胁 | 分布在边界圈；感知和战斗强度高于 T1；弱装备角色具有较高死亡风险；可以潜行绕过，目标体验是在取得铜刃后挑战 | `300s` | 正式名称、玩家/敌人属性、战斗周期、奖励 |
 
 敌人强度描述是待验证的体验目标，不代替战斗数值。首个切片不设计敌群、波次、远程或魔法敌人。
@@ -159,7 +159,7 @@ T1/T2 的 Accepted 首轮属性、战斗公式和首轮蒙特卡洛记录见[战
 
 敌人巢点使用跨重生稳定的 `placement_id`；每次有效重生令持久化 `spawn_cycle +1`；`encounter_instance_id` 由两者组成。地图知识和重生时间使用 `placement_id`，遭遇、潜行 XP 与 combat RNG 使用 `encounter_instance_id`。
 
-敌人静止在 placement point。T1/T2 detection radius 的 Accepted 首轮平衡基线分别为 `2/3 tiles`。整数毫秒 `(t-1,t]` 的权威 motion swept segment 与 detection circle 相交时触发遭遇；同毫秒多敌按 `encounter_instance_id`，当前狩猎 archetype 跳过潜行判定。
+敌人静止在 placement point。T1/T2 detection radius 的 Accepted 首轮平衡基线分别为 `2/3 tiles`。整数毫秒 `(t-1,t]` 的权威 motion swept segment 与 detection circle 相交时触发遭遇；同毫秒多敌按 `encounter_instance_id`，当前狩猎 archetype 跳过潜行判定。灰鬃野猪潜行成功固定提供 Stealth XP `12`；同一 encounter instance 最多结算一次。
 
 ## 碎片叙事与线索簿
 

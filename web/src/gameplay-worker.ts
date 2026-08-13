@@ -11,14 +11,14 @@ import {
   type CommandError,
   type FatalError,
   type GameplayCommand,
-  type GameplayReadModelV1,
+  type GameplayReadModelV2,
   type GameplayWorkerToMain,
   type LifecycleError,
   type MainToGameplayWorker,
   type OfflineReport,
   type TaskIntent,
 } from "./gameplay/contracts.ts";
-import { EquipmentLevelTooLowError, GameplayEngine, InvalidEquipmentError, InvalidWorldSeedError, ItemUnavailableError, QuantityOverflowError, RecipeLevelTooLowError, SkillLevelTooLowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
+import { CombatLockedError, EquipmentLevelTooLowError, GameplayEngine, InvalidEquipmentError, InvalidWorldSeedError, ItemUnavailableError, QuantityOverflowError, RecipeLevelTooLowError, SkillLevelTooLowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
 import { ContentPlacementError } from "./gameplay/content.ts";
 import { floorDiv, levelFromTotalXp, tileCoordinate } from "./gameplay/math.ts";
 import { RUNTIME_CHUNK_SIZE } from "./world-contract.ts";
@@ -88,10 +88,10 @@ let dirtyGeneration = 0;
 let committedDirtyGeneration = 0;
 let dirtySincePerformanceMs: number | null = null;
 let tickQueued = false;
-let saveState: GameplayReadModelV1["save"] = {
+let saveState: GameplayReadModelV2["save"] = {
   state: "none", revision: 0, committedWallClockMs: null, localOnly: true, evictionWarning: false, lastError: null,
 };
-let startupOverride: GameplayReadModelV1["startup"] | null = null;
+let startupOverride: GameplayReadModelV2["startup"] | null = null;
 let inboxTail: Promise<void> = Promise.resolve();
 const pendingTerrain = new Map<string, PendingTerrain>();
 const commandRecords = new Map<string, CommandRecord>();
@@ -125,7 +125,7 @@ function emitReadModel(force = false): void {
   if (!force && engine.revision === lastPostedRevision) return;
   lastPostedRevision = engine.revision;
   post({
-    type: "read-model", protocolVersion: 1,
+    type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION,
     readModel: engine.toReadModel(currentSaveRevision(), committedSnapshot?.meta.committed_wall_clock_ms ?? null, {
       saveState,
       startup: startupOverride ?? undefined,
@@ -173,7 +173,7 @@ function requestTerrainOnce(effect: EngineTerrainEffect): Promise<Uint8Array> {
   };
   pendingTerrain.set(terrainRequestId, pending);
   post({
-    type: "terrain-request", protocolVersion: 1, terrainRequestId,
+    type: "terrain-request", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, terrainRequestId,
     gameplayEpoch: effect.gameplayEpoch, readModelRevision: currentRevision(), seed: effect.seed,
     chunkKey: effect.chunkKey, chunkX: effect.chunkX, chunkY: effect.chunkY,
   });
@@ -224,7 +224,7 @@ function fatalPause(component: string, code: string, exactError?: FatalError): v
   engine?.pause(reason);
   emitReadModel(true);
   post({
-    type: "fatal", protocolVersion: 1,
+    type: "fatal", protocolVersion: GAMEPLAY_PROTOCOL_VERSION,
     error,
     readModelRevision: currentRevision(), saveRevision: currentSaveRevision(),
   });
@@ -373,9 +373,12 @@ function persistTask(task: TaskIntent | null): PersistedTask | null {
     task_id: task.taskId, kind: "Explore", mode: task.mode, destination: task.destination,
     created_world_time_ms: task.createdWorldTimeMs,
   };
-  const common = {
-    task_id: task.taskId, completed_quantity: task.completedQuantity, created_world_time_ms: task.createdWorldTimeMs,
+  if (task.kind === "Hunt") return {
+    task_id: task.taskId, kind: "Hunt", archetype_id: task.archetypeId,
+    requested_kills: task.requestedKills, completed_kills: task.completedKills,
+    created_world_time_ms: task.createdWorldTimeMs,
   };
+  const common = { task_id: task.taskId, completed_quantity: task.completedQuantity, created_world_time_ms: task.createdWorldTimeMs };
   switch (task.kind) {
     case "Gather": return { ...common, kind: "Gather", target_prototype_id: "wild_fiber", quantity: task.quantity };
     case "Woodcut": return { ...common, kind: "Woodcut", target_prototype_id: "softwood_tree", quantity: task.quantity };
@@ -388,6 +391,11 @@ function restoreTask(task: PersistedTask | null): TaskIntent | null {
   if (task === null) return null;
   if (task.kind === "Explore") return {
     taskId: task.task_id, kind: "Explore", mode: task.mode, destination: task.destination,
+    createdWorldTimeMs: task.created_world_time_ms,
+  };
+  if (task.kind === "Hunt") return {
+    taskId: task.task_id, kind: "Hunt", archetypeId: task.archetype_id,
+    requestedKills: task.requested_kills, completedKills: task.completed_kills,
     createdWorldTimeMs: task.created_world_time_ms,
   };
   const common = {
@@ -416,17 +424,23 @@ function coreFromEngine(
     world_time_ms: state.worldTimeMs,
     position: state.position,
     camp_anchor: state.campAnchor,
-    hp: { current: 100, max: 100 },
+    hp: {
+      current_micro: state.playerHpMicro,
+      max_micro: state.playerMaxHpMicro,
+      regen_numerator: state.hpRegenNumerator,
+    },
     exploration: { level: levelFromTotalXp(state.totalXp), total_xp: state.totalXp },
     skills: {
       gathering: { level: levelFromTotalXp(state.gatheringXp), total_xp: state.gatheringXp },
       woodcutting: { level: levelFromTotalXp(state.woodcuttingXp), total_xp: state.woodcuttingXp },
       mining: { level: levelFromTotalXp(state.miningXp), total_xp: state.miningXp },
       crafting: { level: levelFromTotalXp(state.craftingXp), total_xp: state.craftingXp },
+      melee: { level: levelFromTotalXp(state.meleeXp), total_xp: state.meleeXp },
+      stealth: { level: levelFromTotalXp(state.stealthXp), total_xp: state.stealthXp },
     },
     inventory: {
       fiber: state.fiber, softwood: state.softwood, stone: state.stone, copper_ore: state.copperOre,
-      rope: state.rope, worn_axe: state.wornAxe, worn_pickaxe: state.wornPickaxe,
+      rope: state.rope, raw_hide: state.rawHide, worn_axe: state.wornAxe, worn_pickaxe: state.wornPickaxe,
       reinforced_axe: state.reinforcedAxe, reinforced_pickaxe: state.reinforcedPickaxe,
     },
     equipment: { ...state.equipment },
@@ -469,6 +483,15 @@ function coreFromEngine(
       },
       waiting_reason: state.execution.waitingReason,
     },
+    combat: state.combat,
+    respawn: state.respawn,
+    revival_grace_until_world_time_ms: state.revivalGraceUntilWorldTimeMs,
+    counters: {
+      target_kills: state.targetKills,
+      other_kills: state.otherKills,
+      deaths: state.deaths,
+      respawns: state.respawns,
+    },
     command_receipts: [...receipts].sort((left, right) => left.command_id < right.command_id ? -1 : left.command_id > right.command_id ? 1 : 0),
     next_event_ordinal: state.nextEventOrdinal,
     last_offline_report: offlineReport,
@@ -489,11 +512,14 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
     woodcuttingXp: core.skills.woodcutting.total_xp,
     miningXp: core.skills.mining.total_xp,
     craftingXp: core.skills.crafting.total_xp,
+    meleeXp: core.skills.melee.total_xp,
+    stealthXp: core.skills.stealth.total_xp,
     fiber: core.inventory.fiber,
     softwood: core.inventory.softwood,
     stone: core.inventory.stone,
     copperOre: core.inventory.copper_ore,
     rope: core.inventory.rope,
+    rawHide: core.inventory.raw_hide,
     wornAxe: core.inventory.worn_axe,
     wornPickaxe: core.inventory.worn_pickaxe,
     reinforcedAxe: core.inventory.reinforced_axe,
@@ -529,7 +555,18 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
       chunkKey: chunk.chunk_key,
       revealedBase64: btoa(String.fromCharCode(...chunk.revealed_bits)),
       knownPlacements: chunk.known_placements,
+      knownEnemyPlacements: chunk.known_enemy_placements,
     })),
+    playerHpMicro: core.hp.current_micro,
+    playerMaxHpMicro: core.hp.max_micro,
+    hpRegenNumerator: core.hp.regen_numerator,
+    combat: core.combat,
+    respawn: core.respawn,
+    revivalGraceUntilWorldTimeMs: core.revival_grace_until_world_time_ms,
+    targetKills: core.counters.target_kills,
+    otherKills: core.counters.other_kills,
+    deaths: core.counters.deaths,
+    respawns: core.counters.respawns,
     nextEventOrdinal: core.next_event_ordinal,
   });
   activateTerrainEpoch(engine.epoch);
@@ -613,7 +650,7 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
     const sliceDuration = performance.now() - sliceStart;
     if (sliceDuration > maxSliceMs) maxSliceMs = sliceDuration;
     post({
-      type: "offline-progress", protocolVersion: 1, claimId: claim.claim_id,
+      type: "offline-progress", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, claimId: claim.claim_id,
       processedDurationMs: processed.toString(), creditedDurationMs: claim.credited_duration_ms, sliceMaxMs: maxSliceMs,
     });
     if (engine.needsImmediateCommit) {
@@ -656,6 +693,7 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
       { itemId: "stone" as const, displayName: "石料" as const, quantity: after.stone - before.stone },
       { itemId: "copper_ore" as const, displayName: "铜矿石" as const, quantity: after.copperOre - before.copperOre },
       { itemId: "rope" as const, displayName: "绳索" as const, quantity: after.rope - before.rope },
+      { itemId: "raw_hide" as const, displayName: "生皮" as const, quantity: after.rawHide - before.rawHide },
       { itemId: "reinforced_axe" as const, displayName: "强化斧" as const, quantity: after.reinforcedAxe - before.reinforcedAxe },
       { itemId: "reinforced_pickaxe" as const, displayName: "强化镐" as const, quantity: after.reinforcedPickaxe - before.reinforcedPickaxe },
     ].filter((delta) => delta.quantity !== 0),
@@ -665,7 +703,14 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
       { skillId: "woodcutting" as const, displayName: "伐木" as const, xp: after.woodcuttingXp - before.woodcuttingXp },
       { skillId: "mining" as const, displayName: "采矿" as const, xp: after.miningXp - before.miningXp },
       { skillId: "crafting" as const, displayName: "工艺" as const, xp: after.craftingXp - before.craftingXp },
+      { skillId: "melee" as const, displayName: "近战" as const, xp: after.meleeXp - before.meleeXp },
+      { skillId: "stealth" as const, displayName: "潜行" as const, xp: after.stealthXp - before.stealthXp },
     ].filter((gain) => gain.xp > 0),
+    targetKills: after.targetKills - before.targetKills,
+    otherKills: after.otherKills - before.otherKills,
+    deaths: after.deaths - before.deaths,
+    respawns: after.respawns - before.respawns,
+    finalHpMicro: after.playerHpMicro.toString(),
     stopReason: engine.toReadModel().activity.reason,
     committedRevision: nextRevision,
   };
@@ -710,6 +755,11 @@ async function processOfflineAtInitialization(currentWallClockMs: number): Promi
         revealedTiles: 0,
         itemDeltas: [],
         skillXpGains: [],
+        targetKills: 0,
+        otherKills: 0,
+        deaths: 0,
+        respawns: 0,
+        finalHpMicro: snapshot.playerHpMicro.toString(),
         stopReason: null,
         committedRevision: base.meta.current_revision,
       };
@@ -981,6 +1031,7 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
     });
     if (error instanceof ItemUnavailableError) return rejection(command.commandId, { code: "command/item_unavailable", params: null, diagnosticId: null });
     if (error instanceof InvalidEquipmentError) return rejection(command.commandId, { code: "command/invalid_equipment", params: null, diagnosticId: null });
+    if (error instanceof CombatLockedError) return rejection(command.commandId, { code: "command/combat_locked", params: null, diagnosticId: null });
     if (error instanceof ContentPlacementError) return rejection(command.commandId, { code: "command/content_placement_failed", params: null, diagnosticId: null });
     if (error instanceof QuantityOverflowError) {
       const id = diagnosticId("engine", "quantity-overflow");
@@ -1009,7 +1060,7 @@ async function processCommandUnchecked(requestId: string, command: GameplayComma
   const prior = commandRecords.get(command.commandId);
   if (prior !== undefined && prior.payloadSha256 !== payloadSha256) {
     const result = rejection(command.commandId, { code: "command/id_conflict", params: { commandId: command.commandId }, diagnosticId: null });
-    post({ type: "command-result", protocolVersion: 1, requestId, ...result });
+    post({ type: "command-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, ...result });
     return;
   }
   const retry = retryableMutations.get(command.commandId);
@@ -1020,13 +1071,13 @@ async function processCommandUnchecked(requestId: string, command: GameplayComma
   if (command.type === "ExportSave" && result.status === "accepted" && result.exportBackupUtf8 !== undefined) {
     const owned = result.exportBackupUtf8.slice().buffer;
     post({
-      type: "export-ready", protocolVersion: 1, requestId, commandId: command.commandId,
+      type: "export-ready", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, commandId: command.commandId,
       saveRevision: result.saveRevision, filename: `baiyue-rpg-save-r${result.saveRevision}.json`, backupUtf8: owned,
     }, [owned]);
     return;
   }
   post({
-    type: "command-result", protocolVersion: 1, requestId, commandId: result.commandId,
+    type: "command-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, commandId: result.commandId,
     status: result.status, readModelRevision: result.readModelRevision, saveRevision: result.saveRevision, error: result.error,
   });
 }
@@ -1040,7 +1091,7 @@ async function processCommand(requestId: string, command: GameplayCommand): Prom
       code: "backup/invalid_shape", params: null, diagnosticId: diagnosticId("backup", "invalid-shape"),
     });
     post({
-      type: "command-result", protocolVersion: 1, requestId, commandId: result.commandId,
+      type: "command-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, commandId: result.commandId,
       status: result.status, readModelRevision: result.readModelRevision, saveRevision: result.saveRevision, error: result.error,
     });
   }
@@ -1083,17 +1134,17 @@ function emitProtocolError(input: unknown): void {
   const typeKnown = typeof record?.type === "string" && knownTypes.includes(record.type);
   const version = record?.protocolVersion;
   const error = isU32(version) && version !== GAMEPLAY_PROTOCOL_VERSION
-    ? { code: "protocol/version_mismatch" as const, params: { expected: 1 as const, actual: version }, diagnosticId: diagnosticId("protocol", "version-mismatch") }
+    ? { code: "protocol/version_mismatch" as const, params: { expected: GAMEPLAY_PROTOCOL_VERSION, actual: version }, diagnosticId: diagnosticId("protocol", "version-mismatch") }
     : typeof record?.type === "string" && !typeKnown
       ? { code: "protocol/unknown_message" as const, params: null, diagnosticId: diagnosticId("protocol", "unknown-message") }
       : { code: "protocol/invalid_message" as const, params: null, diagnosticId: diagnosticId("protocol", "invalid-message") };
-  post({ type: "protocol-error", protocolVersion: 1, requestId, error, readModelRevision: currentRevision(), saveRevision: currentSaveRevision() });
+  post({ type: "protocol-error", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId, error, readModelRevision: currentRevision(), saveRevision: currentSaveRevision() });
 }
 
 async function initializeWorker(input: Extract<MainToGameplayWorker, { type: "initialize" }>): Promise<void> {
   if (engine !== null || storage !== null || gameplayLock !== null || generatorVersion !== null) {
     post({
-      type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "initialize", status: "rejected",
+      type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "initialize", status: "rejected",
       readModelRevision: currentRevision(), saveRevision: currentSaveRevision(),
       error: { code: "undefined_failure", params: null, diagnosticId: diagnosticId("worker", "already-initialized") },
     });
@@ -1115,7 +1166,7 @@ async function initializeWorker(input: Extract<MainToGameplayWorker, { type: "in
       generatorVersion = input.generatorVersion;
       blockedInitializationError = persistenceLifecycleError(persistence);
       post({
-        type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "initialize", status: "rejected",
+        type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "initialize", status: "rejected",
         readModelRevision: 0, saveRevision: 0, error: blockedInitializationError,
       });
       return;
@@ -1140,7 +1191,7 @@ async function initializeWorker(input: Extract<MainToGameplayWorker, { type: "in
       startBackgroundWork();
     }
     post({
-      type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "initialize", status: "accepted",
+      type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "initialize", status: "accepted",
       readModelRevision: currentRevision(), saveRevision: currentSaveRevision(), error: null,
     });
     emitReadModel(true);
@@ -1150,7 +1201,7 @@ async function initializeWorker(input: Extract<MainToGameplayWorker, { type: "in
     const persistence = error instanceof PersistenceError
       ? error : new PersistenceError("storage/unavailable", "gameplay initialization failed", null, { cause: error });
     post({
-      type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "initialize", status: "rejected",
+      type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "initialize", status: "rejected",
       readModelRevision: 0, saveRevision: 0, error: persistenceLifecycleError(persistence),
     });
   }
@@ -1182,14 +1233,14 @@ async function processInboxMessage(input: MainToGameplayWorker): Promise<void> {
         if (committedSnapshot !== null) await commitDirty(input.wallClockMs);
         if (engine?.needsImmediateCommit) engine.acknowledgeImmediateCommit();
         emitReadModel(true);
-        post({ type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "flush", status: "accepted",
+        post({ type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "flush", status: "accepted",
           readModelRevision: currentRevision(), saveRevision: currentSaveRevision(), error: null });
       } catch (error: unknown) {
         const persistence = error instanceof PersistenceError
           ? error : new PersistenceError("storage/write_failed", "flush failed", null, { cause: error });
         const lifecycle = persistenceLifecycleError(persistence);
         fatalPause("storage", "flush-failed", lifecycle);
-        post({ type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "flush", status: "rejected",
+        post({ type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "flush", status: "rejected",
           readModelRevision: currentRevision(), saveRevision: currentSaveRevision(), error: lifecycle });
       }
       return;
@@ -1201,7 +1252,7 @@ async function processInboxMessage(input: MainToGameplayWorker): Promise<void> {
       storage = null;
       if (gameplayLock !== null) await gameplayLock.release();
       gameplayLock = null;
-      post({ type: "request-result", protocolVersion: 1, requestId: input.requestId, operation: "shutdown", status: "accepted",
+      post({ type: "request-result", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, requestId: input.requestId, operation: "shutdown", status: "accepted",
         readModelRevision: currentRevision(), saveRevision: currentSaveRevision(), error: null });
       scope.close();
       return;
