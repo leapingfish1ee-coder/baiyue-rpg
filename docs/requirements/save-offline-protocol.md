@@ -5,19 +5,19 @@
 - 确认日期：2026-08-09
 - 适用范围：单机浏览器 MVP 的 gameplay persistence 与离线恢复
 
-> 本文已封板。IndexedDB、`idb`、gameplay worker、Web Lock、store 边界、offline claim、自动保存和导入导出均为 Accepted 架构，不是已实现事实。实现时仍须重新核对 `idb` 正式版本、TypeScript types 和 Web Worker 支持，并精确 pin 依赖与 lockfile。
+> 本文已封板。IndexedDB、`idb`、gameplay worker、Web Lock、store 边界、offline claim、自动保存和导入导出均已用于阶段 1 至 2C。精确当前 schema 见阶段运行时契约；未来系统仍须复用同一边界。
 
 > [自由向量移动、导航、迷雾与目标索取](movement-navigation-protocol.md)已经 Accepted，并封闭 weighted Theta*、fixed-point motion、整数毫秒量化和同刻事件顺序。offline/reload fixture 与性能 benchmark 属于实现验收工作。
 
 ## 当前证据
 
-审计基准：2026-08-09。
+审计基准：2026-08-13。
 
-- [`web/package.json`](../../web/package.json) 只有 TypeScript、Vite 和 Playwright devDependencies，没有 production dependency。
-- 当前 `localStorage` 只保存 Terrain Sheet、texture/shader、lighting 和面板偏好；见[当前状态](../product/current-state.md#未实现)。仓库没有 gameplay persistence。
-- [`generator-worker.ts`](../../web/src/generator-worker.ts) 是现有 WASM terrain generator 的唯一调用桥接。
-- [`ChunkManager`](../../web/src/chunk-manager.ts) 只维护内存 chunk cache 和生成请求生命周期。
-- 当前没有 IndexedDB、Web Locks、BroadcastChannel 或 gameplay worker 实现。
+- [`web/package.json`](../../web/package.json) 固定 production dependency `idb 8.0.3`。
+- [`gameplay-worker.ts`](../../web/src/gameplay-worker.ts) 是 gameplay state、world time、离线推进和存档的唯一写入者。
+- IndexedDB 使用 `meta`、`core`、`world_chunks` 和 `resume_claim` 四个无索引 store；Web Lock 限制同一 origin 只有一个 gameplay authority。
+- `localStorage` 只保存 Terrain Sheet、texture/shader、lighting 和面板偏好，不保存 gameplay state。
+- [`generator-worker.ts`](../../web/src/generator-worker.ts) 继续作为 WASM terrain generator 的唯一调用桥接；`ChunkManager` 只拥有生成请求与 terrain cache，不拥有 gameplay state。
 
 `localStorage` 是同步、字符串型 Web Storage。平台文档给出的通用上限是每个 origin 最多约 `5 MiB` local storage；具体可用空间仍受浏览器策略影响。无论容量如何，它都不提供本协议需要的跨 object-store 事务，因此不作为 gameplay save。
 

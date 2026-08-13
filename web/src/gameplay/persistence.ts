@@ -31,7 +31,7 @@ import {
 import { base64ToFogBits, fogBitsToBase64, FOG_BYTES_PER_CHUNK } from "./fog.ts";
 import { floorDiv, levelFromTotalXp } from "./math.ts";
 import type { KnownResourcePlacement } from "./engine.ts";
-import { isResourcePrototypeId, taskKindMatchesPrototype, type ResourcePrototypeId, type ToolItemId, type ToolSlot } from "./content.ts";
+import { isRecipeId, isResourcePrototypeId, taskKindMatchesPrototype, type RecipeId, type ResourcePrototypeId, type ToolItemId, type ToolSlot } from "./content.ts";
 
 export const GAMEPLAY_DATABASE_NAME = "baiyue-rpg-gameplay";
 export const GAMEPLAY_LOCK_NAME = "baiyue-rpg:active-save";
@@ -50,7 +50,8 @@ export type PersistedTask =
   | Readonly<{ task_id: string; kind: "Explore"; mode: "continuous" | "destination"; destination: WorldPoint | null; created_world_time_ms: string }>
   | Readonly<{ task_id: string; kind: "Gather"; target_prototype_id: "wild_fiber"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
   | Readonly<{ task_id: string; kind: "Woodcut"; target_prototype_id: "softwood_tree"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
-  | Readonly<{ task_id: string; kind: "Mine"; target_prototype_id: "surface_stone" | "shallow_copper_deposit"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>;
+  | Readonly<{ task_id: string; kind: "Mine"; target_prototype_id: "surface_stone" | "shallow_copper_deposit"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
+  | Readonly<{ task_id: string; kind: "Produce"; recipe_id: RecipeId; requested_quantity: number | null; completed_quantity: number; created_world_time_ms: string }>;
 
 export type PersistedMotionLeg = Readonly<{
   start: WorldPoint;
@@ -70,6 +71,7 @@ export type PersistedExecution = Readonly<{
   motion: PersistedMotionLeg | null;
   target_placement_id: string | null;
   action: Readonly<{
+    kind: "Resource";
     action_id: string;
     placement_id: string;
     prototype_id: ResourcePrototypeId;
@@ -78,6 +80,15 @@ export type PersistedExecution = Readonly<{
     duration_ms: string;
     skill_speed_bps: number;
     tool_speed_bps: number;
+    total_speed_bps: number;
+  } | {
+    kind: "Produce";
+    action_id: string;
+    recipe_id: RecipeId;
+    start_world_time_ms: string;
+    end_world_time_ms: string;
+    duration_ms: string;
+    skill_speed_bps: number;
     total_speed_bps: number;
   }> | null;
   waiting_reason: ActivityReason | null;
@@ -90,9 +101,9 @@ export type MetaRecord = Readonly<{
   committed_wall_clock_ms: number;
   committed_world_time_ms: string;
   db_schema_version: 1;
-  save_schema_version: 3;
-  game_rules_version: 3;
-  content_version: 3;
+  save_schema_version: 4;
+  game_rules_version: 4;
+  content_version: 4;
   generator_version: number;
   integrity_algorithm: typeof INTEGRITY_ALGORITHM;
   core_checksum_sha256: string;
@@ -112,8 +123,12 @@ export type CoreRecord = Readonly<{
     gathering: Readonly<{ level: number; total_xp: number }>;
     woodcutting: Readonly<{ level: number; total_xp: number }>;
     mining: Readonly<{ level: number; total_xp: number }>;
+    crafting: Readonly<{ level: number; total_xp: number }>;
   }>;
-  inventory: Readonly<{ fiber: number; softwood: number; stone: number; copper_ore: number; worn_axe: number; worn_pickaxe: number }>;
+  inventory: Readonly<{
+    fiber: number; softwood: number; stone: number; copper_ore: number; rope: number;
+    worn_axe: number; worn_pickaxe: number; reinforced_axe: number; reinforced_pickaxe: number;
+  }>;
   equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: PersistedTask | null;
   execution: PersistedExecution;
@@ -251,6 +266,13 @@ function isPersistedTask(value: unknown): value is PersistedTask {
       && (task.quantity === null || (isSafeUint(task.quantity) && task.quantity > 0))
       && isSafeUint(task.completed_quantity) && (task.quantity === null || task.completed_quantity <= task.quantity);
   }
+  if (task.kind === "Produce") {
+    return exactObject(task, ["task_id", "kind", "recipe_id", "requested_quantity", "completed_quantity", "created_world_time_ms"])
+      && isRecipeId(task.recipe_id)
+      && (task.requested_quantity === null || (isSafeUint(task.requested_quantity) && task.requested_quantity > 0))
+      && isSafeUint(task.completed_quantity)
+      && (task.requested_quantity === null || task.completed_quantity <= task.requested_quantity);
+  }
   if (!exactObject(task, ["task_id", "kind", "mode", "destination", "created_world_time_ms"]) || task.kind !== "Explore") return false;
   return task.mode === "continuous" ? task.destination === null : task.mode === "destination" && isWorldPoint(task.destination);
 }
@@ -272,15 +294,26 @@ function isExecution(value: unknown): value is PersistedExecution {
   if (value.route.length === 0 ? value.route_index !== 0 : value.route_index >= value.route.length) return false;
   if (!(value.motion === null || isMotion(value.motion)) || !(value.waiting_reason === null || isActivityReason(value.waiting_reason))) return false;
   if (!(value.target_placement_id === null || isPlacementId(value.target_placement_id))) return false;
-  if (!(value.action === null || (exactObject(value.action, ["action_id", "placement_id", "prototype_id", "start_world_time_ms", "end_world_time_ms", "duration_ms", "skill_speed_bps", "tool_speed_bps", "total_speed_bps"])
-    && isActionId(value.action.action_id) && isPlacementId(value.action.placement_id)
-    && isResourcePrototypeId(value.action.prototype_id)
-    && isCanonicalUnsignedDecimal(value.action.start_world_time_ms) && isCanonicalUnsignedDecimal(value.action.end_world_time_ms)
-    && isCanonicalUnsignedDecimal(value.action.duration_ms) && BigInt(value.action.end_world_time_ms) > BigInt(value.action.start_world_time_ms)
-    && BigInt(value.action.end_world_time_ms) - BigInt(value.action.start_world_time_ms) === BigInt(value.action.duration_ms)
-    && isSafeUint(value.action.skill_speed_bps) && value.action.skill_speed_bps <= 2_500
-    && isSafeUint(value.action.tool_speed_bps) && isSafeUint(value.action.total_speed_bps)
-    && value.action.total_speed_bps === value.action.skill_speed_bps + value.action.tool_speed_bps))) return false;
+  if (value.action !== null) {
+    if (typeof value.action !== "object" || Array.isArray(value.action)) return false;
+    const action = value.action as Record<string, unknown>;
+    const commonValid = isActionId(action.action_id)
+      && isCanonicalUnsignedDecimal(action.start_world_time_ms) && isCanonicalUnsignedDecimal(action.end_world_time_ms)
+      && isCanonicalUnsignedDecimal(action.duration_ms) && BigInt(action.end_world_time_ms) > BigInt(action.start_world_time_ms)
+      && BigInt(action.end_world_time_ms) - BigInt(action.start_world_time_ms) === BigInt(action.duration_ms)
+      && isSafeUint(action.skill_speed_bps) && action.skill_speed_bps <= 2_500 && isSafeUint(action.total_speed_bps);
+    if (!commonValid) return false;
+    if (action.kind === "Resource") {
+      if (!exactObject(action, ["kind", "action_id", "placement_id", "prototype_id", "start_world_time_ms", "end_world_time_ms", "duration_ms", "skill_speed_bps", "tool_speed_bps", "total_speed_bps"])
+        || !isPlacementId(action.placement_id) || !isResourcePrototypeId(action.prototype_id)
+        || !isSafeUint(action.skill_speed_bps) || !isSafeUint(action.total_speed_bps) || !isSafeUint(action.tool_speed_bps)
+        || action.total_speed_bps !== action.skill_speed_bps + action.tool_speed_bps) return false;
+    } else if (action.kind === "Produce") {
+      if (!exactObject(action, ["kind", "action_id", "recipe_id", "start_world_time_ms", "end_world_time_ms", "duration_ms", "skill_speed_bps", "total_speed_bps"])
+        || !isRecipeId(action.recipe_id) || !isSafeUint(action.skill_speed_bps) || !isSafeUint(action.total_speed_bps)
+        || action.total_speed_bps !== action.skill_speed_bps) return false;
+    } else return false;
+  }
   if (value.state === "moving" && value.motion === null) return false;
   if (value.state === "acting" && value.action === null) return false;
   return value.state === "waiting" || value.state === "paused" ? value.waiting_reason !== null : value.waiting_reason === null;
@@ -300,18 +333,20 @@ export function isCoreRecord(value: unknown): value is CoreRecord {
   if (!exactObject(value.hp, ["current", "max"]) || value.hp.current !== 100 || value.hp.max !== 100) return false;
   if (!exactObject(value.exploration, ["level", "total_xp"]) || !isSafeUint(value.exploration.level)
     || value.exploration.level < 1 || value.exploration.level > 100 || !isSafeUint(value.exploration.total_xp)) return false;
-  if (!exactObject(value.skills, ["gathering", "woodcutting", "mining"])) return false;
-  for (const skillId of ["gathering", "woodcutting", "mining"] as const) {
+  if (!exactObject(value.skills, ["gathering", "woodcutting", "mining", "crafting"])) return false;
+  for (const skillId of ["gathering", "woodcutting", "mining", "crafting"] as const) {
     const skill = value.skills[skillId];
     if (!exactObject(skill, ["level", "total_xp"]) || !isSafeUint(skill.level) || skill.level < 1 || skill.level > 100
       || !isSafeUint(skill.total_xp) || skill.level !== levelFromTotalXp(skill.total_xp)) return false;
   }
-  if (!exactObject(value.inventory, ["fiber", "softwood", "stone", "copper_ore", "worn_axe", "worn_pickaxe"])
+  if (!exactObject(value.inventory, ["fiber", "softwood", "stone", "copper_ore", "rope", "worn_axe", "worn_pickaxe", "reinforced_axe", "reinforced_pickaxe"])
     || !isSafeUint(value.inventory.fiber) || !isSafeUint(value.inventory.softwood) || !isSafeUint(value.inventory.stone)
-    || !isSafeUint(value.inventory.copper_ore) || !isSafeUint(value.inventory.worn_axe) || !isSafeUint(value.inventory.worn_pickaxe)) return false;
+    || !isSafeUint(value.inventory.copper_ore) || !isSafeUint(value.inventory.rope)
+    || !isSafeUint(value.inventory.worn_axe) || !isSafeUint(value.inventory.worn_pickaxe)
+    || !isSafeUint(value.inventory.reinforced_axe) || !isSafeUint(value.inventory.reinforced_pickaxe)) return false;
   if (!exactObject(value.equipment, ["axe", "pickaxe"])
-    || !(value.equipment.axe === null || value.equipment.axe === "worn_axe")
-    || !(value.equipment.pickaxe === null || value.equipment.pickaxe === "worn_pickaxe")
+    || !(value.equipment.axe === null || value.equipment.axe === "worn_axe" || value.equipment.axe === "reinforced_axe")
+    || !(value.equipment.pickaxe === null || value.equipment.pickaxe === "worn_pickaxe" || value.equipment.pickaxe === "reinforced_pickaxe")
     || value.inventory.worn_axe + (value.equipment.axe === "worn_axe" ? 1 : 0) !== 1
     || value.inventory.worn_pickaxe + (value.equipment.pickaxe === "worn_pickaxe" ? 1 : 0) !== 1) return false;
   if (!(value.task === null || isPersistedTask(value.task)) || !isExecution(value.execution)
@@ -331,8 +366,14 @@ export function isCoreRecord(value: unknown): value is CoreRecord {
   if (execution.state === "planning" && (value.task === null || execution.route.length !== 0 || execution.motion !== null || execution.waiting_reason !== null)) return false;
   if ((execution.state === "waiting" || execution.state === "moving") && value.task === null) return false;
   if (execution.state === "waiting" && execution.motion !== null) return false;
-  if (execution.state === "acting" && (value.task === null || value.task.kind === "Explore" || execution.action === null
-    || execution.target_placement_id !== execution.action.placement_id || value.task.target_prototype_id !== execution.action.prototype_id)) return false;
+  if (execution.state === "acting") {
+    if (value.task === null || value.task.kind === "Explore" || execution.action === null) return false;
+    if (execution.action.kind === "Resource") {
+      if (value.task.kind === "Produce" || execution.target_placement_id !== execution.action.placement_id
+        || value.task.target_prototype_id !== execution.action.prototype_id) return false;
+    } else if (value.task.kind !== "Produce" || execution.target_placement_id !== null
+      || value.task.recipe_id !== execution.action.recipe_id) return false;
+  }
   if (execution.state !== "acting" && execution.action !== null) return false;
   if (execution.state === "acting" && execution.action !== null
     && (BigInt(execution.action.start_world_time_ms) > BigInt(value.world_time_ms)
@@ -751,10 +792,12 @@ async function validateSnapshot(snapshot: PersistedSnapshot, generatorVersion: n
   }
   if (core.execution.state === "acting") {
     const action = core.execution.action;
-    const target = action === null ? undefined : chunks.flatMap((chunk) => chunk.known_placements)
-      .find((placement) => placement.placementId === action.placement_id);
-    if (target === undefined || target.availability !== "active" || target.prototypeId !== action?.prototype_id) {
-      throw new PersistenceError("storage/integrity_failed", "active resource action does not reference an active known placement");
+    if (action?.kind === "Resource") {
+      const target = chunks.flatMap((chunk) => chunk.known_placements)
+        .find((placement) => placement.placementId === action.placement_id);
+      if (target === undefined || target.availability !== "active" || target.prototypeId !== action.prototype_id) {
+        throw new PersistenceError("storage/integrity_failed", "active resource action does not reference an active known placement");
+      }
     }
   }
   if (resumeClaim !== null && (resumeClaim.base_revision > core.revision

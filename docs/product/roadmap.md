@@ -64,19 +64,20 @@
 
 阶段 2B 按“显式任务类别 + 共享资源执行器”分层实现。先打通软木树与斧，再在同一执行器加入地表石、镐和边界浅层铜矿；不预建阶段 2C 模块。
 
-### 阶段 2C：生产与装备
+### 阶段 2C：手工工艺与工具升级
 
-状态：**Planned**。尚无实施包，也不表示已实现。
+实现状态：**Implemented**。当前能力与限制见[当前状态](current-state.md)，运行时增量见[阶段 2C 运行时契约](../specifications/phase-2c-runtime-contracts.md)。
 
-目标：在已有资源、库存和工具边界上加入首批生产链与可逆装备软专精。
+目标：把已有资源转化为能够立即提高生活技能效率的第一条生产闭环。
 
-- 加入锻造、工艺和生产 `TaskIntent`。
-- 加入首批已确认配方、材料检查、handcraft 与 compatible station 索取。
-- 加入生产周期原子结算和本阶段实际使用的装备槽与属性。
+- 加入工艺技能和生产 `TaskIntent`。
+- 加入 `rope`、`reinforced_axe`、`reinforced_pickaxe` 三个 handcraft 配方。
+- 加入材料检查、缺料事件唤醒和生产周期原子结算。
+- 复用 axe/pickaxe 槽位，让强化工具真实缩短对应行动时间。
 - 保持缺料等待，不自动采集、购买或切换任务。
-- 不加入敌人、战斗、狩猎或叙事。
+- 不加入工作站、锻造、敌人、战斗、狩猎或叙事。
 
-阶段 2C 仍需单独起草并接受实施包；阶段 2B 未提前建立配方或装备兼容层。
+实施依据为[阶段 2C 实施包](../engineering/phase-2c-crafting-tool-upgrades.md)和 [Decision-0006](../decisions/0006-crafting-tool-upgrade-slice.md)。工作站与锻造将在战斗武器能够产生实际用途时单独封板；阶段 2C 不预建空接口。
 
 阶段 2 各子阶段继续服从[技能成长](../requirements/skill-progression.md)、[自动任务](../requirements/automation-tasks.md)、[探索与目标索取](../requirements/exploration.md)、[物品与装备系统](../requirements/item-equipment.md)和[玩法 UI](../requirements/gameplay-ui.md)。
 

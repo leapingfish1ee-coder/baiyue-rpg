@@ -3,7 +3,7 @@ import { Camera } from "./camera.ts";
 import { ChunkManager } from "./chunk-manager.ts";
 import { GameplayClient } from "./gameplay-client.ts";
 import type { ActivityReason, GameplayReadModelV1, WorldPoint } from "./gameplay/contracts.ts";
-import { RESOURCE_DEFINITIONS, RESOURCE_PROTOTYPE_ORDER, type ResourcePrototypeId, type ResourceTaskKind } from "./gameplay/content.ts";
+import { RECIPE_DEFINITIONS, RESOURCE_DEFINITIONS, RESOURCE_PROTOTYPE_ORDER, type RecipeId, type ResourcePrototypeId, type ResourceTaskKind, type ToolItemId } from "./gameplay/content.ts";
 import { base64ToFogBits } from "./gameplay/fog.ts";
 import { Renderer } from "./renderer.ts";
 import { NAV_UNITS_PER_TILE, RUNTIME_CHUNK_SIZE } from "./world-contract.ts";
@@ -42,6 +42,12 @@ const gatherQuantity = required<HTMLInputElement>("#gather-quantity");
 const gatherFiniteButton = required<HTMLButtonElement>("#gather-finite");
 const gatherContinuousButton = required<HTMLButtonElement>("#gather-continuous");
 const gatherProgress = required<HTMLElement>("#gather-progress");
+const produceRecipe = required<HTMLSelectElement>("#produce-recipe");
+const produceQuantity = required<HTMLInputElement>("#produce-quantity");
+const produceFiniteButton = required<HTMLButtonElement>("#produce-finite");
+const produceContinuousButton = required<HTMLButtonElement>("#produce-continuous");
+const recipeDetail = required<HTMLElement>("#recipe-detail");
+const materialsMissing = required<HTMLElement>("#materials-missing");
 const gatheringLevel = required<HTMLElement>("#gathering-level");
 const gatheringXp = required<HTMLElement>("#gathering-xp");
 const gatheringSpeed = required<HTMLElement>("#gathering-speed");
@@ -51,6 +57,9 @@ const woodcuttingSpeed = required<HTMLElement>("#woodcutting-speed");
 const miningLevel = required<HTMLElement>("#mining-level");
 const miningXp = required<HTMLElement>("#mining-xp");
 const miningSpeed = required<HTMLElement>("#mining-speed");
+const craftingLevel = required<HTMLElement>("#crafting-level");
+const craftingXp = required<HTMLElement>("#crafting-xp");
+const craftingSpeed = required<HTMLElement>("#crafting-speed");
 const taskWarning = required<HTMLElement>("#task-warning");
 const fiberQuantity = required<HTMLElement>("#fiber-quantity");
 const materialList = required<HTMLElement>("#material-list");
@@ -59,6 +68,10 @@ const axeEquipped = required<HTMLElement>("#axe-equipped");
 const pickaxeEquipped = required<HTMLElement>("#pickaxe-equipped");
 const axeToggle = required<HTMLButtonElement>("#axe-toggle");
 const pickaxeToggle = required<HTMLButtonElement>("#pickaxe-toggle");
+const axeChoice = required<HTMLSelectElement>("#axe-choice");
+const pickaxeChoice = required<HTMLSelectElement>("#pickaxe-choice");
+const axeDetail = required<HTMLElement>("#axe-detail");
+const pickaxeDetail = required<HTMLElement>("#pickaxe-detail");
 const resourceCount = required<HTMLElement>("#resource-count");
 const resourceList = required<HTMLUListElement>("#resource-list");
 const bottomIntent = required<HTMLElement>("#bottom-intent");
@@ -127,6 +140,7 @@ function reasonLabel(reason: ActivityReason | null): string | null {
     case "NoReachableTargetOrFrontier": return "附近没有可到达的未知区域";
     case "DestinationUnreachable": return "目的地不可到达";
     case "MissingTool": return `缺少${reason.params.slot === "axe" ? "斧" : "镐"}（tier ${reason.params.minimumTier}）`;
+    case "MaterialsMissing": return `缺少材料：${reason.params.materials.map((item) => `${item.displayName} ${item.missing}`).join("、")}`;
     case "storage_write_failed": return "保存失败，探索已暂停";
     case "incompatible_save": return "存档版本不兼容";
     case "active_in_other_tab": return "世界已在另一个标签页运行";
@@ -140,10 +154,16 @@ function activityLabel(model: GameplayReadModelV1): string {
     case "idle": return "空闲";
     case "planning": return model.activity.phase === "acquiring_target" ? "索取资源节点" : model.activity.phase === "auto_exploring" ? "自动探索" : "规划路线";
     case "moving": return model.activity.phase === "moving_to_target" ? "前往资源" : model.activity.phase === "auto_exploring" ? "自动探索" : "探索中";
-    case "acting": return model.activity.action === null ? "资源行动" : `${RESOURCE_DEFINITIONS[model.activity.action.prototypeId].taskKind === "Woodcut" ? "伐木" : RESOURCE_DEFINITIONS[model.activity.action.prototypeId].taskKind === "Mine" ? "采矿" : "采集"} · ${formatDuration(model.activity.action.remainingMs)}`;
+    case "acting": {
+      const action = model.activity.action;
+      if (action === null) return "执行行动";
+      if (action.kind === "Produce") return `生产${RECIPE_DEFINITIONS[action.recipeId].displayName} · ${formatDuration(action.remainingMs)}`;
+      return `${RESOURCE_DEFINITIONS[action.prototypeId].taskKind === "Woodcut" ? "伐木" : RESOURCE_DEFINITIONS[action.prototypeId].taskKind === "Mine" ? "采矿" : "采集"} · ${formatDuration(action.remainingMs)}`;
+    }
     case "waiting": {
       if (model.activity.reason?.code !== "TaskCompleted") return reasonLabel(model.activity.reason) ?? "等待中";
       if (model.task?.kind === "Explore") return model.task.mode === "destination" ? "已抵达目的地" : "探索完成";
+      if (model.task?.kind === "Produce") return "生产完成";
       return model.task === null ? "任务完成" : `${resourceTaskLabel(model.task.kind)}完成`;
     }
     case "paused": return "已暂停";
@@ -175,6 +195,7 @@ function phaseLabel(model: GameplayReadModelV1): string {
   const labels: Record<GameplayReadModelV1["activity"]["phase"], string> = {
     idle: "空闲", exploring: "探索", acquiring_target: "索取最近节点", moving_to_target: "前往采集点",
     resource_action: "资源行动", auto_exploring: "为任务自动探索", waiting: "待机", paused: "暂停",
+    production_action: "生产",
   };
   return labels[model.activity.phase];
 }
@@ -223,6 +244,29 @@ function inventoryRows(items: NonNullable<GameplayReadModelV1["inventory"]>["ite
   });
 }
 
+function syncToolChoice(model: GameplayReadModelV1, slot: "axe" | "pickaxe", select: HTMLSelectElement, detail: HTMLElement, button: HTMLButtonElement): void {
+  const previous = select.value;
+  const candidates = model.toolCandidates.filter((candidate) => candidate.slot === slot && (candidate.inventoryQuantity > 0 || candidate.equipped));
+  const options = candidates.map((candidate) => {
+    const option = document.createElement("option");
+    option.value = candidate.itemId;
+    option.disabled = !candidate.canEquip || (!candidate.equipped && candidate.inventoryQuantity === 0);
+    option.textContent = `${candidate.displayName} · tier ${candidate.tier} · +${candidate.speedBps} bps${candidate.canEquip ? "" : `（需${candidate.requiredSkillId === "woodcutting" ? "伐木" : "采矿"} ${candidate.requiredLevel}）`}`;
+    return option;
+  });
+  select.replaceChildren(...options);
+  const selected = candidates.find((candidate) => candidate.itemId === previous && !select.querySelector<HTMLOptionElement>(`option[value="${candidate.itemId}"]`)?.disabled)
+    ?? candidates.find((candidate) => candidate.equipped)
+    ?? candidates.find((candidate) => candidate.canEquip && candidate.inventoryQuantity > 0);
+  if (selected !== undefined) select.value = selected.itemId;
+  select.disabled = selected === undefined;
+  const equipped = model.equipment?.[slot] ?? null;
+  button.textContent = selected !== undefined && equipped?.itemId === selected.itemId ? "卸下" : "装备";
+  button.disabled = commandBusy || selected === undefined || (!selected.canEquip && !selected.equipped);
+  detail.textContent = selected === undefined ? "没有可用工具"
+    : `tier ${selected.tier} · 速度 +${selected.speedBps} bps · 需${selected.requiredSkillId === "woodcutting" ? "伐木" : "采矿"} ${selected.requiredLevel}`;
+}
+
 function syncGatheringUi(model: GameplayReadModelV1): void {
   const previousTarget = gatherTarget.value;
   const summaries = new Map(model.map.resourcePlacements.map((placement) => [placement.prototypeId, placement]));
@@ -242,14 +286,33 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
   gatherUnknown.hidden = known;
   if (known) updateResourceButtons();
   const task = model.task;
-  const isResourceTask = task !== null && task.kind !== "Explore";
+  const isResourceTask = task !== null && task.kind !== "Explore" && task.kind !== "Produce";
   gatherProgress.textContent = isResourceTask
     ? task.quantity === null ? `${task.completedQuantity} · 持续` : `${task.completedQuantity} / ${task.quantity}`
-    : "未设置";
+    : task?.kind === "Produce"
+      ? `生产 ${task.requestedQuantity === null ? `${task.completedQuantity} · 持续` : `${task.completedQuantity} / ${task.requestedQuantity}`}`
+      : "未设置";
+
+  const previousRecipe = produceRecipe.value;
+  const recipeOptions = model.recipes.map((recipe) => {
+    const option = document.createElement("option");
+    option.value = recipe.recipeId;
+    option.disabled = recipe.locked;
+    option.textContent = `${recipe.displayName}${recipe.locked ? `（需工艺 ${recipe.requiredLevel}）` : ""}`;
+    return option;
+  });
+  produceRecipe.replaceChildren(...recipeOptions);
+  if (recipeOptions.some((option) => option.value === previousRecipe && !option.disabled)) produceRecipe.value = previousRecipe;
+  else if (task?.kind === "Produce") produceRecipe.value = task.recipeId;
+  updateProductionButtons(model);
+  const missingReason = model.activity.reason?.code === "MaterialsMissing" ? model.activity.reason : null;
+  materialsMissing.hidden = missingReason === null;
+  materialsMissing.textContent = missingReason === null ? "" : `材料不足：${missingReason.params.materials.map((item) => `${item.displayName} 缺 ${item.missing}（${item.available}/${item.required}）`).join("；")}`;
 
   syncSkill("采集", model.skills?.gathering, gatheringLevel, gatheringXp, gatheringSpeed);
   syncSkill("伐木", model.skills?.woodcutting, woodcuttingLevel, woodcuttingXp, woodcuttingSpeed);
   syncSkill("采矿", model.skills?.mining, miningLevel, miningXp, miningSpeed);
+  syncSkill("工艺", model.skills?.crafting, craftingLevel, craftingXp, craftingSpeed);
   fiberQuantity.textContent = String(model.inventory?.items.find((item) => item.itemId === "fiber")?.quantity ?? 0);
   const inventoryItems = model.inventory?.items ?? [];
   materialList.replaceChildren(...inventoryRows(inventoryItems.filter((item) => item.category === "material"), "暂无材料"));
@@ -258,8 +321,8 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
   const pickaxe = model.equipment?.pickaxe ?? null;
   axeEquipped.textContent = axe?.displayName ?? "未装备";
   pickaxeEquipped.textContent = pickaxe?.displayName ?? "未装备";
-  axeToggle.textContent = axe === null ? "装备" : "卸下";
-  pickaxeToggle.textContent = pickaxe === null ? "装备" : "卸下";
+  syncToolChoice(model, "axe", axeChoice, axeDetail, axeToggle);
+  syncToolChoice(model, "pickaxe", pickaxeChoice, pickaxeDetail, pickaxeToggle);
 
   resourceCount.textContent = String(model.map.resourcePlacements.length);
   resourceList.replaceChildren(...model.map.resourcePlacements.map((placement) => {
@@ -277,9 +340,11 @@ function syncGatheringUi(model: GameplayReadModelV1): void {
   }));
   syncTaskWarning(model);
 
-  bottomIntent.textContent = task === null ? "无任务" : task.kind !== "Explore"
-    ? `${resourceTaskLabel(task.kind)}${RESOURCE_DEFINITIONS[task.targetPrototypeId].displayName} · ${task.quantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.quantity}`}`
-    : task.mode === "continuous" ? "持续探索" : "目的地探索";
+  bottomIntent.textContent = task === null ? "无任务" : task.kind === "Produce"
+    ? `生产${RECIPE_DEFINITIONS[task.recipeId].displayName} · ${task.requestedQuantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.requestedQuantity}`}`
+    : task.kind !== "Explore"
+      ? `${resourceTaskLabel(task.kind)}${RESOURCE_DEFINITIONS[task.targetPrototypeId].displayName} · ${task.quantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.quantity}`}`
+      : task.mode === "continuous" ? "持续探索" : "目的地探索";
   bottomPhase.textContent = phaseLabel(model);
   bottomRemaining.textContent = model.activity.action !== null
     ? `剩余 ${formatDuration(model.activity.action.remainingMs)} · ${model.activity.action.skillSpeedBps} bps`
@@ -355,8 +420,8 @@ function syncProductUi(model: GameplayReadModelV1): void {
       offlineTitle.textContent = `旅程继续了 ${formatDuration(model.offlineReport.creditedDurationMs)}`;
       const discarded = BigInt(model.offlineReport.discardedDurationMs);
       const skillGains = model.offlineReport.skillXpGains.map((gain) => `${gain.displayName} XP +${gain.xp}`).join("，");
-      const itemGains = model.offlineReport.itemGains.map((gain) => `${gain.displayName} +${gain.quantity}`).join("，");
-      offlineSummary.textContent = `${[skillGains, itemGains, `揭露 ${model.offlineReport.revealedTiles} 格`].filter(Boolean).join("，")}。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
+      const itemDeltas = model.offlineReport.itemDeltas.map((delta) => `${delta.displayName} ${delta.quantity > 0 ? "+" : ""}${delta.quantity}`).join("，");
+      offlineSummary.textContent = `${[skillGains, itemDeltas, `揭露 ${model.offlineReport.revealedTiles} 格`].filter(Boolean).join("，")}。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
     }
   }
 }
@@ -365,8 +430,13 @@ client.subscribe(syncProductUi);
 
 function setBusy(busy: boolean): void {
   commandBusy = busy;
-  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, axeToggle, pickaxeToggle, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
+  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, produceFiniteButton, produceContinuousButton, axeToggle, pickaxeToggle, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
     button.disabled = busy;
+  }
+  if (!busy && readModel !== null) {
+    updateProductionButtons(readModel);
+    syncToolChoice(readModel, "axe", axeChoice, axeDetail, axeToggle);
+    syncToolChoice(readModel, "pickaxe", pickaxeChoice, pickaxeDetail, pickaxeToggle);
   }
 }
 
@@ -419,6 +489,31 @@ function updateResourceButtons(): void {
   if (readModel !== null) syncTaskWarning(readModel);
 }
 
+function requestedProductionQuantity(): number | null {
+  const text = produceQuantity.value.trim();
+  if (text === "") return null;
+  const quantity = Number(text);
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new RangeError("生产数量必须是正安全整数");
+  return quantity;
+}
+
+function updateProductionButtons(model = readModel): void {
+  const recipe = model?.recipes.find((candidate) => candidate.recipeId === produceRecipe.value);
+  const text = produceQuantity.value.trim();
+  produceFiniteButton.textContent = /^\d+$/.test(text) ? `生产 ×${text}` : "设置生产";
+  produceContinuousButton.textContent = "持续生产";
+  if (recipe === undefined) {
+    recipeDetail.textContent = "没有可用配方";
+    produceFiniteButton.disabled = true;
+    produceContinuousButton.disabled = true;
+    return;
+  }
+  const inputs = recipe.inputs.map((input) => `${input.displayName} ${input.required}（现有 ${input.available}）`).join(" + ");
+  recipeDetail.textContent = `${inputs} → ${recipe.output.displayName} ${recipe.output.quantity} · 基础 ${formatDuration(recipe.baseDurationMs)} · 实际 ${formatDuration(recipe.durationMs)} · 工艺 XP ${recipe.xp} · 手工`;
+  produceFiniteButton.disabled = commandBusy || recipe.locked;
+  produceContinuousButton.disabled = commandBusy || recipe.locked;
+}
+
 function setSelectedResourceTask(quantity: number | null) {
   const prototypeId = gatherTarget.value as ResourcePrototypeId;
   switch (prototypeId) {
@@ -433,6 +528,8 @@ gatherQuantity.addEventListener("input", () => {
   updateResourceButtons();
 });
 gatherTarget.addEventListener("change", updateResourceButtons);
+produceQuantity.addEventListener("input", () => updateProductionButtons());
+produceRecipe.addEventListener("change", () => updateProductionButtons());
 
 gatherFiniteButton.addEventListener("click", () => {
   let quantity: number;
@@ -457,21 +554,50 @@ gatherContinuousButton.addEventListener("click", () => {
   );
 });
 
+produceFiniteButton.addEventListener("click", () => {
+  let quantity: number;
+  try {
+    const requested = requestedProductionQuantity();
+    if (requested === null) throw new RangeError("请输入生产数量，或选择持续生产");
+    quantity = requested;
+  } catch (error: unknown) {
+    showToast(error instanceof Error ? error.message : "生产数量无效", true);
+    return;
+  }
+  const recipeId = produceRecipe.value as RecipeId;
+  void runCommand(
+    () => client.command({ type: "SetTask", task: { kind: "Produce", recipeId, requestedQuantity: quantity } }),
+    `已设置生产${RECIPE_DEFINITIONS[recipeId].displayName} ×${quantity}`,
+  );
+});
+
+produceContinuousButton.addEventListener("click", () => {
+  const recipeId = produceRecipe.value as RecipeId;
+  void runCommand(
+    () => client.command({ type: "SetTask", task: { kind: "Produce", recipeId, requestedQuantity: null } }),
+    `已开始持续生产${RECIPE_DEFINITIONS[recipeId].displayName}`,
+  );
+});
+
 axeToggle.addEventListener("click", () => {
   const equipped = readModel?.equipment?.axe ?? null;
+  const selected = axeChoice.value as ToolItemId;
   void runCommand(
-    () => equipped === null ? client.command({ type: "EquipItem", itemId: "worn_axe" }) : client.command({ type: "UnequipSlot", slot: "axe" }),
-    equipped === null ? "已装备破旧斧" : "已卸下破旧斧",
+    () => equipped?.itemId === selected ? client.command({ type: "UnequipSlot", slot: "axe" }) : client.command({ type: "EquipItem", itemId: selected }),
+    equipped?.itemId === selected ? `已卸下${equipped.displayName}` : `已装备${readModel?.toolCandidates.find((candidate) => candidate.itemId === selected)?.displayName ?? "斧"}`,
   );
 });
 
 pickaxeToggle.addEventListener("click", () => {
   const equipped = readModel?.equipment?.pickaxe ?? null;
+  const selected = pickaxeChoice.value as ToolItemId;
   void runCommand(
-    () => equipped === null ? client.command({ type: "EquipItem", itemId: "worn_pickaxe" }) : client.command({ type: "UnequipSlot", slot: "pickaxe" }),
-    equipped === null ? "已装备破旧镐" : "已卸下破旧镐",
+    () => equipped?.itemId === selected ? client.command({ type: "UnequipSlot", slot: "pickaxe" }) : client.command({ type: "EquipItem", itemId: selected }),
+    equipped?.itemId === selected ? `已卸下${equipped.displayName}` : `已装备${readModel?.toolCandidates.find((candidate) => candidate.itemId === selected)?.displayName ?? "镐"}`,
   );
 });
+axeChoice.addEventListener("change", () => { if (readModel !== null) syncToolChoice(readModel, "axe", axeChoice, axeDetail, axeToggle); });
+pickaxeChoice.addEventListener("change", () => { if (readModel !== null) syncToolChoice(readModel, "pickaxe", pickaxeChoice, pickaxeDetail, pickaxeToggle); });
 
 destinationModeButton.addEventListener("click", () => {
   choosingDestination = true;

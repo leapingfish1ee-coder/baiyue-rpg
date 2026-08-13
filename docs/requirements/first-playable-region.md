@@ -115,19 +115,19 @@ world seed
 | `reinforced_pickaxe` | 工艺工具升级 | tier `1`；采矿 speed `+10%`；`采矿 2` |
 | `copper_blade` | 锻造武器升级 | damage `8–12`；accuracy `+10`；interval `2.4s`；永久要求 `近战 2` |
 | `raw_hide` | T1 狩猎材料 | 每次目标击杀 guaranteed drop `×1` |
-| `rope` | 工艺中间材料 | `工艺 1` 配方；完整输出数量由首版内容表补齐 |
+| `rope` | 工艺中间材料 | `工艺 1` 配方；单周期产出 `×1` |
 | `hunter_coat` | `body` 防具 | max HP `+10`；armor `+10` |
 | `trail_charm` | `accessory` | stealth `+5` |
 
-除 `raw_hide` 和 `rope` 外，已有基础材料与中间材料的稳定 `item_id` 尚未编写。内容专项必须在编码前把这些 ID 与完整输出数量写入版本化内容表。相同装备按 `item_id` 堆叠，不生成物品实例；库存不因容量停止持续任务。
+已实现基础材料的稳定 `item_id` 为 `fiber`、`softwood`、`stone` 和 `copper_ore`。本阶段确认 `rope`、`reinforced_axe` 和 `reinforced_pickaxe`；尚未进入实现的战斗与锻造材料仍由对应内容专项在编码前补齐。相同装备按 `item_id` 堆叠，不生成物品实例；库存不因容量停止持续任务。
 
 ### 工艺配方
 
 | 配方 | 技能要求 | 材料 | 基础时间 | 固定经验 | 完整输出或效果 |
 |---|---:|---|---:|---:|---|
-| `rope` | `工艺 1` | `2 纤维` | `12s` | `12 XP` | 单周期数量由首版内容表补齐 |
-| `reinforced_axe` | `工艺 2` | `4 软木 + rope ×2 + 2 石料` | `30s` | `30 XP` | 伐木装备速度 `+10%`；单周期数量由首版内容表补齐 |
-| `reinforced_pickaxe` | `工艺 2` | `4 软木 + rope ×2 + 3 石料` | `30s` | `30 XP` | 采矿装备速度 `+10%`；单周期数量由首版内容表补齐 |
+| `rope` | `工艺 1` | `2 纤维` | `12s` | `12 XP` | `rope ×1` |
+| `reinforced_axe` | `工艺 2` | `4 软木 + rope ×2 + 2 石料` | `30s` | `30 XP` | `reinforced_axe ×1`；伐木装备速度 `+10%` |
+| `reinforced_pickaxe` | `工艺 2` | `4 软木 + rope ×2 + 3 石料` | `30s` | `30 XP` | `reinforced_pickaxe ×1`；采矿装备速度 `+10%` |
 | `hunter_coat` | `工艺 2` | `raw_hide ×4 + rope ×2` | `45s` | `45 XP` | `body`；max HP `+10`；armor `+10`；单周期数量由首版内容表补齐 |
 | `trail_charm` | `工艺 2` | `raw_hide ×2 + rope ×2` | `30s` | `30 XP` | `accessory`；stealth `+5`；单周期数量由首版内容表补齐 |
 
@@ -246,7 +246,7 @@ T1 的 Accepted 首轮 combat XP 为 `30`。按当前 Accepted 曲线，等级 `
 ## 内容与验证工作
 
 - 内容专项须补齐各圈层内容实例的保证数量、密度、间距和冗余，并写入版本化内容表。
-- 内容专项须补齐工艺与锻造配方的单周期完整产出数量、稳定 `item_id` 和正式显示名称。
+- 战斗与锻造内容专项须补齐尚未进入实现的配方产出数量、稳定 `item_id` 和正式显示名称。
 - 实现专项须写明 `CONTENT_VERSION` 的表示、存放位置和与存档字段的关系。
 - 导航专项须完成 `ceilSqrt`、`roundDivNearestEven`、毫秒量化 circle detection、collision、path cost、frontier、起始扫描和跨 chunk fixtures/benchmark。
 - 战斗专项须归档可复现模拟脚本、seed、数值精度，并加入真实路径恢复、敌人密度与重生的端到端验证。

@@ -5,20 +5,18 @@
 - 确认日期：2026-08-09
 - 适用范围：首个端到端可玩切片的 gameplay shell
 
-> 本文已封板。map-first shell、单一 contextual drawer、响应式布局、stable waiting reasons、Worker/UI read model 和启动流程均为 Accepted UI 基线，不是已实现事实。本次文档封板不修改 HTML、CSS 或 TypeScript。
+> 本文已封板。map-first shell、stable waiting reasons、Worker/UI read model 和启动流程已实现阶段 1 至 2C 子集。战斗、死亡、叙事和完整 contextual drawer 尚未实现。
 
 > [自由向量移动、导航、迷雾与目标索取协议](movement-navigation-protocol.md)已经 Accepted。相关 route、fog destination、target list 和 waiting action 直接按该协议实现；fixed-point fixture 与性能 benchmark 属于实现验收。
 
 ## 当前证据
 
-审计基准：2026-08-09。
+审计基准：2026-08-13。当前详细事实见[当前状态](../product/current-state.md)。
 
-- 当前 [`web/index.html`](../../web/index.html) 由 full-screen world/texture canvas 和左上角 `World Debug` panel 构成。
-- [`style.css`](../../web/src/style.css) 把 Debug panel 宽度限制为 `min(620px, calc(100vw - 24px))`。
-- Debug panel 包含 seed、grid、base color、GPU、texture tool、lighting/texture parameters、chunk/position/zoom 和 debug JSON export。
-- 当前没有 player、task、skill、inventory、journal、save 或 offline gameplay UI；见[当前状态](../product/current-state.md#未实现)。
-- 当前地图相机已经支持拖拽、WASD、滚轮和 zoom presets。
-- Lighting Lab 是独立开发页面。
+- [`web/index.html`](../../web/index.html) 是 map-first 产品根，提供玩家状态、任务、技能、库存、装备、已知资源、存档和离线报告。
+- 产品已发布 Explore、Gather、Woodcut、Mine 和 Produce，以及对应稳定等待原因。Journal、战斗和死亡 UI 尚未实现。
+- World Debug 与 Lighting Lab 保持独立开发页面，产品根不显示 Debug 入口。
+- 地图相机支持拖拽、WASD、滚轮和 zoom presets；任务表单为键盘用户提供非 canvas 路径。
 
 正式玩法不能继续把功能叠加进 Debug panel。产品 UI 与开发工具必须分离。
 

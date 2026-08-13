@@ -4,7 +4,7 @@
 
 UI 必须解释玩家意图、当前执行状态、结算结果和停止原因。它不能把未实现功能显示为可用，也不能用逐帧日志掩盖状态语义。
 
-[玩法界面信息架构](gameplay-information-architecture.md)已将 map-first shell、drawer、响应式布局和 Worker/UI contract 确认为首个切片的现行设计。该 Accepted 规范尚未实现。
+[玩法界面信息架构](gameplay-information-architecture.md)已将 map-first shell、drawer、响应式布局和 Worker/UI contract 确认为首个切片的现行设计。阶段 1 至 2C 已实现探索与生活技能子集；战斗、死亡和叙事 UI 尚未实现。
 
 ## 任务设置器
 

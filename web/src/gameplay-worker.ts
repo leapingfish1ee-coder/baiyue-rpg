@@ -18,7 +18,7 @@ import {
   type OfflineReport,
   type TaskIntent,
 } from "./gameplay/contracts.ts";
-import { GameplayEngine, InvalidEquipmentError, InvalidWorldSeedError, ItemUnavailableError, QuantityOverflowError, SkillLevelTooLowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
+import { EquipmentLevelTooLowError, GameplayEngine, InvalidEquipmentError, InvalidWorldSeedError, ItemUnavailableError, QuantityOverflowError, RecipeLevelTooLowError, SkillLevelTooLowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
 import { ContentPlacementError } from "./gameplay/content.ts";
 import { floorDiv, levelFromTotalXp, tileCoordinate } from "./gameplay/math.ts";
 import { RUNTIME_CHUNK_SIZE } from "./world-contract.ts";
@@ -374,13 +374,13 @@ function persistTask(task: TaskIntent | null): PersistedTask | null {
     created_world_time_ms: task.createdWorldTimeMs,
   };
   const common = {
-    task_id: task.taskId, quantity: task.quantity, completed_quantity: task.completedQuantity,
-    created_world_time_ms: task.createdWorldTimeMs,
+    task_id: task.taskId, completed_quantity: task.completedQuantity, created_world_time_ms: task.createdWorldTimeMs,
   };
   switch (task.kind) {
-    case "Gather": return { ...common, kind: "Gather", target_prototype_id: "wild_fiber" };
-    case "Woodcut": return { ...common, kind: "Woodcut", target_prototype_id: "softwood_tree" };
-    case "Mine": return { ...common, kind: "Mine", target_prototype_id: task.targetPrototypeId };
+    case "Gather": return { ...common, kind: "Gather", target_prototype_id: "wild_fiber", quantity: task.quantity };
+    case "Woodcut": return { ...common, kind: "Woodcut", target_prototype_id: "softwood_tree", quantity: task.quantity };
+    case "Mine": return { ...common, kind: "Mine", target_prototype_id: task.targetPrototypeId, quantity: task.quantity };
+    case "Produce": return { ...common, kind: "Produce", recipe_id: task.recipeId, requested_quantity: task.requestedQuantity };
   }
 }
 
@@ -391,13 +391,13 @@ function restoreTask(task: PersistedTask | null): TaskIntent | null {
     createdWorldTimeMs: task.created_world_time_ms,
   };
   const common = {
-    taskId: task.task_id, quantity: task.quantity, completedQuantity: task.completed_quantity,
-    createdWorldTimeMs: task.created_world_time_ms,
+    taskId: task.task_id, completedQuantity: task.completed_quantity, createdWorldTimeMs: task.created_world_time_ms,
   };
   switch (task.kind) {
-    case "Gather": return { ...common, kind: "Gather", targetPrototypeId: "wild_fiber" };
-    case "Woodcut": return { ...common, kind: "Woodcut", targetPrototypeId: "softwood_tree" };
-    case "Mine": return { ...common, kind: "Mine", targetPrototypeId: task.target_prototype_id };
+    case "Gather": return { ...common, kind: "Gather", targetPrototypeId: "wild_fiber", quantity: task.quantity };
+    case "Woodcut": return { ...common, kind: "Woodcut", targetPrototypeId: "softwood_tree", quantity: task.quantity };
+    case "Mine": return { ...common, kind: "Mine", targetPrototypeId: task.target_prototype_id, quantity: task.quantity };
+    case "Produce": return { ...common, kind: "Produce", recipeId: task.recipe_id, requestedQuantity: task.requested_quantity };
   }
 }
 
@@ -422,10 +422,12 @@ function coreFromEngine(
       gathering: { level: levelFromTotalXp(state.gatheringXp), total_xp: state.gatheringXp },
       woodcutting: { level: levelFromTotalXp(state.woodcuttingXp), total_xp: state.woodcuttingXp },
       mining: { level: levelFromTotalXp(state.miningXp), total_xp: state.miningXp },
+      crafting: { level: levelFromTotalXp(state.craftingXp), total_xp: state.craftingXp },
     },
     inventory: {
       fiber: state.fiber, softwood: state.softwood, stone: state.stone, copper_ore: state.copperOre,
-      worn_axe: state.wornAxe, worn_pickaxe: state.wornPickaxe,
+      rope: state.rope, worn_axe: state.wornAxe, worn_pickaxe: state.wornPickaxe,
+      reinforced_axe: state.reinforcedAxe, reinforced_pickaxe: state.reinforcedPickaxe,
     },
     equipment: { ...state.equipment },
     task,
@@ -444,7 +446,8 @@ function coreFromEngine(
         path_index: state.execution.motion.pathIndex,
       },
       target_placement_id: state.execution.targetPlacementId,
-      action: state.execution.action === null ? null : {
+      action: state.execution.action === null ? null : state.execution.action.kind === "Resource" ? {
+        kind: "Resource",
         action_id: state.execution.action.actionId,
         placement_id: state.execution.action.placementId,
         prototype_id: state.execution.action.prototypeId,
@@ -453,6 +456,15 @@ function coreFromEngine(
         duration_ms: state.execution.action.durationMs,
         skill_speed_bps: state.execution.action.skillSpeedBps,
         tool_speed_bps: state.execution.action.toolSpeedBps,
+        total_speed_bps: state.execution.action.totalSpeedBps,
+      } : {
+        kind: "Produce",
+        action_id: state.execution.action.actionId,
+        recipe_id: state.execution.action.recipeId,
+        start_world_time_ms: state.execution.action.startWorldTimeMs,
+        end_world_time_ms: state.execution.action.endWorldTimeMs,
+        duration_ms: state.execution.action.durationMs,
+        skill_speed_bps: state.execution.action.skillSpeedBps,
         total_speed_bps: state.execution.action.totalSpeedBps,
       },
       waiting_reason: state.execution.waitingReason,
@@ -476,18 +488,23 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
     gatheringXp: core.skills.gathering.total_xp,
     woodcuttingXp: core.skills.woodcutting.total_xp,
     miningXp: core.skills.mining.total_xp,
+    craftingXp: core.skills.crafting.total_xp,
     fiber: core.inventory.fiber,
     softwood: core.inventory.softwood,
     stone: core.inventory.stone,
     copperOre: core.inventory.copper_ore,
+    rope: core.inventory.rope,
     wornAxe: core.inventory.worn_axe,
     wornPickaxe: core.inventory.worn_pickaxe,
+    reinforcedAxe: core.inventory.reinforced_axe,
+    reinforcedPickaxe: core.inventory.reinforced_pickaxe,
     equipment: { ...core.equipment },
     task: restoreTask(core.task),
     executionState: core.execution.state,
     routePurpose: core.execution.route_purpose,
     targetPlacementId: core.execution.target_placement_id,
-    action: core.execution.action === null ? null : {
+    action: core.execution.action === null ? null : core.execution.action.kind === "Resource" ? {
+      kind: "Resource",
       actionId: core.execution.action.action_id,
       placementId: core.execution.action.placement_id,
       prototypeId: core.execution.action.prototype_id,
@@ -496,6 +513,15 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
       durationMs: core.execution.action.duration_ms,
       skillSpeedBps: core.execution.action.skill_speed_bps,
       toolSpeedBps: core.execution.action.tool_speed_bps,
+      totalSpeedBps: core.execution.action.total_speed_bps,
+    } : {
+      kind: "Produce",
+      actionId: core.execution.action.action_id,
+      recipeId: core.execution.action.recipe_id,
+      startWorldTimeMs: core.execution.action.start_world_time_ms,
+      endWorldTimeMs: core.execution.action.end_world_time_ms,
+      durationMs: core.execution.action.duration_ms,
+      skillSpeedBps: core.execution.action.skill_speed_bps,
       totalSpeedBps: core.execution.action.total_speed_bps,
     },
     waitingReason: core.execution.waiting_reason,
@@ -624,17 +650,21 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
     taskBefore,
     taskAfter: taskClone(after.task),
     revealedTiles: after.revealedTileCount - before.revealedTileCount,
-    itemGains: [
+    itemDeltas: [
       { itemId: "fiber" as const, displayName: "纤维" as const, quantity: after.fiber - before.fiber },
       { itemId: "softwood" as const, displayName: "软木" as const, quantity: after.softwood - before.softwood },
       { itemId: "stone" as const, displayName: "石料" as const, quantity: after.stone - before.stone },
       { itemId: "copper_ore" as const, displayName: "铜矿石" as const, quantity: after.copperOre - before.copperOre },
-    ].filter((gain) => gain.quantity > 0),
+      { itemId: "rope" as const, displayName: "绳索" as const, quantity: after.rope - before.rope },
+      { itemId: "reinforced_axe" as const, displayName: "强化斧" as const, quantity: after.reinforcedAxe - before.reinforcedAxe },
+      { itemId: "reinforced_pickaxe" as const, displayName: "强化镐" as const, quantity: after.reinforcedPickaxe - before.reinforcedPickaxe },
+    ].filter((delta) => delta.quantity !== 0),
     skillXpGains: [
       { skillId: "exploration" as const, displayName: "探索" as const, xp: after.totalXp - before.totalXp },
       { skillId: "gathering" as const, displayName: "采集" as const, xp: after.gatheringXp - before.gatheringXp },
       { skillId: "woodcutting" as const, displayName: "伐木" as const, xp: after.woodcuttingXp - before.woodcuttingXp },
       { skillId: "mining" as const, displayName: "采矿" as const, xp: after.miningXp - before.miningXp },
+      { skillId: "crafting" as const, displayName: "工艺" as const, xp: after.craftingXp - before.craftingXp },
     ].filter((gain) => gain.xp > 0),
     stopReason: engine.toReadModel().activity.reason,
     committedRevision: nextRevision,
@@ -678,7 +708,7 @@ async function processOfflineAtInitialization(currentWallClockMs: number): Promi
         taskBefore: taskClone(snapshot.task),
         taskAfter: taskClone(snapshot.task),
         revealedTiles: 0,
-        itemGains: [],
+        itemDeltas: [],
         skillXpGains: [],
         stopReason: null,
         committedRevision: base.meta.current_revision,
@@ -937,6 +967,16 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
     if (error instanceof SkillLevelTooLowError) return rejection(command.commandId, {
       code: "command/skill_level_too_low",
       params: { prototypeId: error.prototypeId, skillId: error.skillId, requiredLevel: error.requiredLevel, actualLevel: error.actualLevel },
+      diagnosticId: null,
+    });
+    if (error instanceof RecipeLevelTooLowError) return rejection(command.commandId, {
+      code: "command/recipe_level_too_low",
+      params: { recipeId: error.recipeId, skillId: error.skillId, requiredLevel: error.requiredLevel, actualLevel: error.actualLevel },
+      diagnosticId: null,
+    });
+    if (error instanceof EquipmentLevelTooLowError) return rejection(command.commandId, {
+      code: "command/equipment_level_too_low",
+      params: { itemId: error.itemId, skillId: error.skillId, requiredLevel: error.requiredLevel, actualLevel: error.actualLevel },
       diagnosticId: null,
     });
     if (error instanceof ItemUnavailableError) return rejection(command.commandId, { code: "command/item_unavailable", params: null, diagnosticId: null });

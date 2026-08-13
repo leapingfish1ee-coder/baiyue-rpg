@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { canonicalJson, compareCodePoints } from "../src/gameplay/canonical-json.ts";
-import { ambientPlacementCandidate, authoritativeGatherDuration, authoritativeResourceDuration, contentCellForTile, resolveAmbientPlacementConflicts } from "../src/gameplay/content.ts";
+import { RECIPE_DEFINITIONS, ambientPlacementCandidate, authoritativeCraftingDuration, authoritativeGatherDuration, authoritativeResourceDuration, contentCellForTile, resolveAmbientPlacementConflicts } from "../src/gameplay/content.ts";
 import { GameplayEngine } from "../src/gameplay/engine.ts";
 import { revealObservation, revealTile, revealedTiles } from "../src/gameplay/fog.ts";
 import { selectIntersectingCircleByStableId, sweptSegmentIntersectsCircle } from "../src/gameplay/geometry.ts";
@@ -364,6 +364,43 @@ function createLandEngine() {
   return { engine, requests };
 }
 
+function restoreFixtureEngine(created, overrides = {}) {
+  const saved = created.persistedState();
+  const engine = new GameplayEngine(3);
+  engine.restore({
+    seed: saved.seed,
+    worldTimeMs: saved.worldTimeMs,
+    position: saved.position,
+    campAnchor: saved.campAnchor,
+    totalXp: saved.totalXp,
+    gatheringXp: saved.gatheringXp,
+    woodcuttingXp: saved.woodcuttingXp,
+    miningXp: saved.miningXp,
+    craftingXp: saved.craftingXp,
+    fiber: saved.fiber,
+    softwood: saved.softwood,
+    stone: saved.stone,
+    copperOre: saved.copperOre,
+    rope: saved.rope,
+    wornAxe: saved.wornAxe,
+    wornPickaxe: saved.wornPickaxe,
+    reinforcedAxe: saved.reinforcedAxe,
+    reinforcedPickaxe: saved.reinforcedPickaxe,
+    equipment: saved.equipment,
+    task: saved.task,
+    executionState: saved.execution.state,
+    routePurpose: saved.execution.routePurpose,
+    targetPlacementId: saved.execution.targetPlacementId,
+    action: saved.execution.action,
+    waitingReason: saved.execution.waitingReason,
+    worldChunks: saved.worldChunks,
+    nextEventOrdinal: saved.nextEventOrdinal,
+    ...overrides,
+  });
+  driveEngine(engine, () => new Uint8Array(4096).fill(3));
+  return engine;
+}
+
 function driveToAction(engine) {
   for (let iteration = 0; iteration < 2_000 && engine.snapshot().activityState !== "acting"; iteration += 1) {
     driveEngine(engine, () => new Uint8Array(4096).fill(3));
@@ -402,6 +439,113 @@ test("phase 2B content placement fixes eight reachable guarantees, boundary copp
   assert.deepEqual(engine.toReadModel().knownTargetPrototypeIds, ["wild_fiber", "softwood_tree", "surface_stone"]);
 });
 
+test("phase 2C recipe table and crafting duration are closed and stable", () => {
+  assert.deepEqual(RECIPE_DEFINITIONS, {
+    rope: {
+      recipeId: "rope", displayName: "绳索", skillId: "crafting", requiredLevel: 1,
+      inputs: [{ itemId: "fiber", displayName: "纤维", quantity: 2 }],
+      baseDurationMs: 12_000n, output: { itemId: "rope", displayName: "绳索", quantity: 1 }, xp: 12, station: null,
+    },
+    reinforced_axe: {
+      recipeId: "reinforced_axe", displayName: "强化斧", skillId: "crafting", requiredLevel: 2,
+      inputs: [{ itemId: "softwood", displayName: "软木", quantity: 4 }, { itemId: "rope", displayName: "绳索", quantity: 2 }, { itemId: "stone", displayName: "石料", quantity: 2 }],
+      baseDurationMs: 30_000n, output: { itemId: "reinforced_axe", displayName: "强化斧", quantity: 1 }, xp: 30, station: null,
+    },
+    reinforced_pickaxe: {
+      recipeId: "reinforced_pickaxe", displayName: "强化镐", skillId: "crafting", requiredLevel: 2,
+      inputs: [{ itemId: "softwood", displayName: "软木", quantity: 4 }, { itemId: "rope", displayName: "绳索", quantity: 2 }, { itemId: "stone", displayName: "石料", quantity: 3 }],
+      baseDurationMs: 30_000n, output: { itemId: "reinforced_pickaxe", displayName: "强化镐", quantity: 1 }, xp: 30, station: null,
+    },
+  });
+  assert.deepEqual(authoritativeCraftingDuration("rope", 1), { durationMs: 12_000n, skillSpeedBps: 0, totalSpeedBps: 0 });
+  assert.deepEqual(authoritativeCraftingDuration("rope", 2), { durationMs: 11_941n, skillSpeedBps: 50, totalSpeedBps: 50 });
+});
+
+test("production waits for all materials, settles atomically, cancels cleanly, and is reload-stable", () => {
+  const created = createLandEngine().engine;
+  created.setTask("cmd:0123456789abcdef:200", { kind: "Produce", recipeId: "rope", requestedQuantity: 1 });
+  assert.equal(created.toReadModel().activity.reason?.code, "MaterialsMissing");
+  assert.deepEqual(created.toReadModel().activity.reason?.params.materials, [
+    { itemId: "fiber", displayName: "纤维", required: 2, available: 0, missing: 2 },
+  ]);
+  created.advanceBy(60_000n);
+  assert.equal(created.toReadModel().activity.reason?.code, "MaterialsMissing", "waiting does not poll or auto-gather");
+
+  const resumed = restoreFixtureEngine(created, { fiber: 2 });
+  const action = resumed.toReadModel().activity.action;
+  assert.deepEqual(action, {
+    kind: "Produce", actionId: action.actionId, recipeId: "rope", baseDurationMs: "12000", durationMs: "12000",
+    remainingMs: "12000", skillSpeedBps: 0, totalSpeedBps: 0,
+  });
+  resumed.advanceBy(5_000n);
+  const midActionReload = restoreFixtureEngine(resumed);
+  assert.equal(midActionReload.toReadModel().activity.action?.remainingMs, "7000", "reload resumes the same production action");
+  midActionReload.advanceBy(7_000n);
+  assert.deepEqual({ fiber: midActionReload.snapshot().fiber, rope: midActionReload.snapshot().rope, xp: midActionReload.snapshot().craftingXp }, { fiber: 0, rope: 1, xp: 12 });
+  assert.equal(midActionReload.snapshot().task.completedQuantity, 1);
+  assert.equal(midActionReload.toReadModel().activity.reason?.code, "TaskCompleted");
+  assert.equal(midActionReload.needsImmediateCommit, true);
+
+  const settledReload = restoreFixtureEngine(midActionReload);
+  settledReload.advanceBy(60_000n);
+  assert.deepEqual({ fiber: settledReload.snapshot().fiber, rope: settledReload.snapshot().rope, xp: settledReload.snapshot().craftingXp }, { fiber: 0, rope: 1, xp: 12 });
+  assert.equal(settledReload.snapshot().task.completedQuantity, 1, "reload does not repeat settlement");
+
+  const cancelled = restoreFixtureEngine(created, { fiber: 2, task: null, executionState: "idle", waitingReason: null });
+  cancelled.setTask("cmd:0123456789abcdef:201", { kind: "Produce", recipeId: "rope", requestedQuantity: 1 });
+  cancelled.advanceBy(6_000n);
+  cancelled.cancelTask();
+  assert.deepEqual({ fiber: cancelled.snapshot().fiber, rope: cancelled.snapshot().rope, xp: cancelled.snapshot().craftingXp }, { fiber: 2, rope: 0, xp: 0 });
+
+  const continuous = restoreFixtureEngine(created, { fiber: 4, task: null, executionState: "idle", waitingReason: null });
+  continuous.setTask("cmd:0123456789abcdef:202", { kind: "Produce", recipeId: "rope", requestedQuantity: null });
+  continuous.advanceBy(12_000n);
+  continuous.acknowledgeImmediateCommit();
+  continuous.advanceBy(12_000n);
+  assert.deepEqual({ fiber: continuous.snapshot().fiber, rope: continuous.snapshot().rope, xp: continuous.snapshot().craftingXp, completed: continuous.snapshot().task.completedQuantity },
+    { fiber: 0, rope: 2, xp: 24, completed: 2 });
+  assert.equal(continuous.toReadModel().activity.reason?.code, "MaterialsMissing");
+});
+
+test("crafted reinforced tools enforce permanent levels, swap atomically, and contribute 1000 bps", () => {
+  const created = createLandEngine().engine;
+  const engine = restoreFixtureEngine(created, {
+    woodcuttingXp: xpAtLevelStart(2), miningXp: xpAtLevelStart(2), craftingXp: xpAtLevelStart(2),
+    softwood: 8, stone: 5, rope: 4,
+  });
+  engine.setTask("cmd:0123456789abcdef:210", { kind: "Produce", recipeId: "reinforced_axe", requestedQuantity: 1 });
+  engine.advanceBy(30_000n);
+  engine.acknowledgeImmediateCommit();
+  engine.setTask("cmd:0123456789abcdef:211", { kind: "Produce", recipeId: "reinforced_pickaxe", requestedQuantity: 1 });
+  engine.advanceBy(30_000n);
+  engine.acknowledgeImmediateCommit();
+  assert.deepEqual({ axe: engine.snapshot().reinforcedAxe, pickaxe: engine.snapshot().reinforcedPickaxe, softwood: engine.snapshot().softwood, stone: engine.snapshot().stone, rope: engine.snapshot().rope },
+    { axe: 1, pickaxe: 1, softwood: 0, stone: 0, rope: 0 });
+
+  const lowLevel = restoreFixtureEngine(engine, { woodcuttingXp: 0, task: null, executionState: "idle", waitingReason: null });
+  assert.throws(() => lowLevel.equipItem("reinforced_axe"), /does not meet level 2/);
+  assert.equal(lowLevel.snapshot().equipment.axe, "worn_axe");
+  assert.equal(lowLevel.snapshot().reinforcedAxe, 1);
+
+  engine.equipItem("reinforced_axe");
+  let persisted = engine.persistedState();
+  assert.deepEqual({ equipped: persisted.equipment.axe, worn: persisted.wornAxe, reinforced: persisted.reinforcedAxe },
+    { equipped: "reinforced_axe", worn: 1, reinforced: 0 });
+  engine.setTask("cmd:0123456789abcdef:212", { kind: "Woodcut", targetPrototypeId: "softwood_tree", quantity: 1 });
+  let action = driveToAction(engine);
+  assert.deepEqual({ kind: action.kind, base: action.baseDurationMs, duration: action.durationMs, skill: action.skillSpeedBps, tool: action.toolSpeedBps, total: action.totalSpeedBps },
+    { kind: "Resource", base: "10000", duration: "9050", skill: 50, tool: 1000, total: 1050 });
+
+  engine.equipItem("reinforced_pickaxe");
+  persisted = engine.persistedState();
+  assert.deepEqual({ equipped: persisted.equipment.pickaxe, worn: persisted.wornPickaxe, reinforced: persisted.reinforcedPickaxe },
+    { equipped: "reinforced_pickaxe", worn: 1, reinforced: 0 });
+  engine.setTask("cmd:0123456789abcdef:213", { kind: "Mine", targetPrototypeId: "surface_stone", quantity: 1 });
+  action = driveToAction(engine);
+  assert.deepEqual({ kind: action.kind, base: action.baseDurationMs, duration: action.durationMs, skill: action.skillSpeedBps, tool: action.toolSpeedBps, total: action.totalSpeedBps },
+    { kind: "Resource", base: "12000", duration: "10860", skill: 50, tool: 1000, total: 1050 });
+});
+
 test("one 6000ms gather action atomically depletes the node and settles fiber, XP, and task count", () => {
   const { engine } = createLandEngine();
   engine.setTask("cmd:0123456789abcdef:99", { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: 1 });
@@ -419,9 +563,10 @@ test("one 6000ms gather action atomically depletes the node and settles fiber, X
   const reloaded = new GameplayEngine(3);
   reloaded.restore({
     seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: saved.position, campAnchor: saved.campAnchor,
-    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: saved.miningXp,
-    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre,
-    wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, equipment: saved.equipment, task: saved.task,
+    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: saved.miningXp, craftingXp: saved.craftingXp,
+    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre, rope: saved.rope,
+    wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, reinforcedAxe: saved.reinforcedAxe, reinforcedPickaxe: saved.reinforcedPickaxe,
+    equipment: saved.equipment, task: saved.task,
     executionState: saved.execution.state, routePurpose: saved.execution.routePurpose,
     targetPlacementId: saved.execution.targetPlacementId, action: saved.execution.action,
     waitingReason: saved.execution.waitingReason, worldChunks: saved.worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
@@ -504,9 +649,10 @@ test("mining 5 can claim and settle the guaranteed boundary copper deposit", () 
   const engine = new GameplayEngine(3);
   engine.restore({
     seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: copperDefinition.point, campAnchor: saved.campAnchor,
-    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: xpAtLevelStart(5),
-    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre,
-    wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, equipment: saved.equipment, task: null,
+    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: xpAtLevelStart(5), craftingXp: saved.craftingXp,
+    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre, rope: saved.rope,
+    wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, reinforcedAxe: saved.reinforcedAxe, reinforcedPickaxe: saved.reinforcedPickaxe,
+    equipment: saved.equipment, task: null,
     executionState: "idle", routePurpose: null, targetPlacementId: null, action: null, waitingReason: null,
     worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
   });

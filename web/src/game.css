@@ -121,9 +121,12 @@ input, select { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-num
 .section-heading, .compact-stat { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .section-heading strong { font-size: 12px; }
 .section-heading span, .compact-stat { color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-#gather-controls { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 9px; }
-#gather-controls label { font-size: 10px; color: var(--muted); }
-#gather-controls input, #gather-controls select { width: 100%; min-height: 34px; }
+#gather-controls, #produce-controls { display: grid; grid-template-columns: 52px minmax(0, 1fr); align-items: center; gap: 7px; margin-top: 9px; }
+#gather-controls label, #produce-controls label { font-size: 10px; color: var(--muted); }
+#gather-controls input, #gather-controls select, #produce-controls input, #produce-controls select { width: 100%; min-height: 34px; }
+.section-subheading { display: flex; justify-content: space-between; gap: 8px; margin-top: 13px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 10px; }
+.section-subheading span { color: var(--muted); }
+.recipe-detail { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .compact-actions { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .compact-actions button { min-height: 36px; padding-inline: 8px; font-size: 11px; }
 .empty-copy { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
@@ -138,6 +141,9 @@ input, select { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-num
 .equipment-row > span { color: var(--muted); }
 .equipment-row > strong { font-size: 11px; }
 .equipment-row button { min-height: 30px; padding-inline: 10px; font-size: 10px; }
+.equipment-choice { grid-template-columns: 25px 56px minmax(0, 1fr) auto; }
+.equipment-choice select { min-height: 30px; padding-inline: 7px; font-size: 10px; }
+.equipment-detail { display: block; margin: 3px 0 8px 32px; color: var(--muted); font-size: 9px; }
 .resource-list { display: grid; gap: 5px; max-height: 120px; margin: 8px 0 0; padding: 0; overflow: auto; list-style: none; }
 .resource-list li { display: grid; grid-template-columns: 8px 1fr; align-items: center; gap: 8px; min-height: 30px; }
 .resource-list li > span { width: 8px; height: 8px; border-radius: 50%; background: #85d59a; }

@@ -26,6 +26,8 @@ const readModel = {
   skills: null,
   inventory: null,
   equipment: null,
+  toolCandidates: [],
+  recipes: [],
   knownTargetPrototypeIds: [],
   map: { revealedChunks: [], resourcePlacements: [], selectedDestination: null },
   save: { state: "none", revision: 0, committedWallClockMs: null, localOnly: true, evictionWarning: false, lastError: null },
@@ -54,6 +56,7 @@ test("every main-to-worker branch is exact and validates IDs, bounds, equality, 
     { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: 10 }, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Woodcut", targetPrototypeId: "softwood_tree", quantity: 2 }, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Mine", targetPrototypeId: "surface_stone", quantity: 1 }, wallClockMs: 1 } },
+    { type: "command", protocolVersion: 1, requestId, command: { type: "SetTask", commandId, task: { kind: "Produce", recipeId: "rope", requestedQuantity: 1 }, wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "EquipItem", commandId, itemId: "worn_axe", wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "UnequipSlot", commandId, slot: "pickaxe", wallClockMs: 1 } },
     { type: "command", protocolVersion: 1, requestId, command: { type: "CancelTask", commandId, wallClockMs: 1 } },
@@ -80,6 +83,12 @@ test("every main-to-worker branch is exact and validates IDs, bounds, equality, 
   const taskWithExtra = structuredClone(branches[2]);
   taskWithExtra.command.task.future = null;
   assert.equal(isMainToGameplayWorker(taskWithExtra), false);
+  const invalidRecipe = structuredClone(branches[7]);
+  invalidRecipe.command.task.recipeId = "copper_blade";
+  assert.equal(isMainToGameplayWorker(invalidRecipe), false);
+  const zeroProduction = structuredClone(branches[7]);
+  zeroProduction.command.task.requestedQuantity = 0;
+  assert.equal(isMainToGameplayWorker(zeroProduction), false);
 });
 
 test("every worker-to-main branch is exact and uses closed error/read-model shapes", () => {
@@ -118,27 +127,56 @@ test("a fully populated read model validates canonical fog and signed clock skew
   const populated = structuredClone(readModel);
   populated.readModelRevision = 4;
   populated.startup = "ready";
-  populated.player = { position: point, hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2b" };
+  populated.player = { position: point, hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2c" };
   populated.exploration = { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, observationRadiusTiles: 4, revealedTileCount: 49 };
   populated.skills = {
     gathering: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
     woodcutting: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
     mining: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
+    crafting: { level: 1, totalXp: 0, currentLevelXp: 0, nextLevelXp: 100, skillSpeedBps: 0 },
   };
   populated.inventory = { items: [{ itemId: "fiber", displayName: "纤维", category: "material", quantity: 1 }] };
   populated.equipment = {
     axe: { itemId: "worn_axe", displayName: "破旧斧", tier: 0, speedBps: 0 },
     pickaxe: { itemId: "worn_pickaxe", displayName: "破旧镐", tier: 0, speedBps: 0 },
   };
+  populated.toolCandidates = [
+    { itemId: "worn_axe", displayName: "破旧斧", slot: "axe", tier: 0, speedBps: 0, requiredSkillId: "woodcutting", requiredLevel: 1, actualLevel: 1, canEquip: true, inventoryQuantity: 0, equipped: true },
+    { itemId: "worn_pickaxe", displayName: "破旧镐", slot: "pickaxe", tier: 0, speedBps: 0, requiredSkillId: "mining", requiredLevel: 1, actualLevel: 1, canEquip: true, inventoryQuantity: 0, equipped: true },
+    { itemId: "reinforced_axe", displayName: "强化斧", slot: "axe", tier: 1, speedBps: 1000, requiredSkillId: "woodcutting", requiredLevel: 2, actualLevel: 1, canEquip: false, inventoryQuantity: 0, equipped: false },
+    { itemId: "reinforced_pickaxe", displayName: "强化镐", slot: "pickaxe", tier: 1, speedBps: 1000, requiredSkillId: "mining", requiredLevel: 2, actualLevel: 1, canEquip: false, inventoryQuantity: 0, equipped: false },
+  ];
+  populated.recipes = [
+    { recipeId: "rope", displayName: "绳索", skillId: "crafting", requiredLevel: 1, locked: false, inputs: [{ itemId: "fiber", displayName: "纤维", required: 2, available: 1, missing: 1 }], output: { itemId: "rope", displayName: "绳索", quantity: 1 }, baseDurationMs: "12000", durationMs: "12000", skillSpeedBps: 0, totalSpeedBps: 0, xp: 12, station: "handcraft" },
+    { recipeId: "reinforced_axe", displayName: "强化斧", skillId: "crafting", requiredLevel: 2, locked: true, inputs: [{ itemId: "softwood", displayName: "软木", required: 4, available: 0, missing: 4 }, { itemId: "rope", displayName: "绳索", required: 2, available: 0, missing: 2 }, { itemId: "stone", displayName: "石料", required: 2, available: 0, missing: 2 }], output: { itemId: "reinforced_axe", displayName: "强化斧", quantity: 1 }, baseDurationMs: "30000", durationMs: "30000", skillSpeedBps: 0, totalSpeedBps: 0, xp: 30, station: "handcraft" },
+    { recipeId: "reinforced_pickaxe", displayName: "强化镐", skillId: "crafting", requiredLevel: 2, locked: true, inputs: [{ itemId: "softwood", displayName: "软木", required: 4, available: 0, missing: 4 }, { itemId: "rope", displayName: "绳索", required: 2, available: 0, missing: 2 }, { itemId: "stone", displayName: "石料", required: 3, available: 0, missing: 3 }], output: { itemId: "reinforced_pickaxe", displayName: "强化镐", quantity: 1 }, baseDurationMs: "30000", durationMs: "30000", skillSpeedBps: 0, totalSpeedBps: 0, xp: 30, station: "handcraft" },
+  ];
   populated.knownTargetPrototypeIds = ["wild_fiber"];
   populated.map.revealedChunks = [{ chunkKey: "0,0", chunkX: "0", chunkY: "0", revealedBase64: fogBase64 }];
   populated.save = { state: "saved", revision: 1, committedWallClockMs: 10, localOnly: true, evictionWarning: false, lastError: null };
   populated.offlineReport = {
     claimId: "claim:1:5", rawElapsedMs: -5, clockSkew: "backward", creditedDurationMs: "0", discardedDurationMs: "0",
     fromWorldTimeMs: "10", toWorldTimeMs: "10", taskBefore: null, taskAfter: null,
-    revealedTiles: 0, itemGains: [], skillXpGains: [], stopReason: null, committedRevision: 1,
+    revealedTiles: 0, itemDeltas: [], skillXpGains: [], stopReason: null, committedRevision: 1,
   };
   assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: populated }), true);
+  const recipeTamper = structuredClone(populated);
+  recipeTamper.recipes[0].inputs[0].required = 3;
+  assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: recipeTamper }), false);
+  const toolTamper = structuredClone(populated);
+  toolTamper.toolCandidates[2].speedBps = 999;
+  assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: toolTamper }), false);
+  const productionAction = structuredClone(populated);
+  productionAction.task = { taskId: "task:0123456789abcdef:0", kind: "Produce", recipeId: "rope", requestedQuantity: 1, completedQuantity: 0, createdWorldTimeMs: "0" };
+  productionAction.activity = {
+    state: "acting", phase: "production_action", route: [], routePurpose: null, routeIndex: 0,
+    etaMs: "12000", progressPermille: 0, targetPlacementId: null,
+    action: { kind: "Produce", actionId: "action:0:0", recipeId: "rope", baseDurationMs: "12000", durationMs: "12000", remainingMs: "12000", skillSpeedBps: 0, totalSpeedBps: 0 },
+    reason: null,
+  };
+  assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: productionAction }), true);
+  productionAction.activity.action.recipeId = "reinforced_axe";
+  assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: productionAction }), false);
   populated.offlineReport.creditedDurationMs = "1";
   assert.equal(isGameplayWorkerToMain({ type: "read-model", protocolVersion: GAMEPLAY_PROTOCOL_VERSION, readModel: populated }), false);
 });

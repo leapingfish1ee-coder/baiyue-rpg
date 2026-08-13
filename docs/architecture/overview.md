@@ -19,11 +19,11 @@ World seed + generator version + chunk coordinates
                  完整静态    可选动态增强
 ```
 
-当前系统只覆盖确定性地形生成、浏览器 streaming 和渲染。未来 RPG 必须新增玩家世界状态、导航、玩法和持久化层，不能把这些语义塞进生成器或纹理。
+当前系统同时包含确定性地形生成、浏览器 streaming/rendering，以及阶段 1 至 2C 的玩家世界状态、导航、生活技能任务和本地持久化。生成、玩家世界状态、玩法模拟和渲染保持分层；尚未实现的战斗、死亡与叙事也不得进入生成器或纹理语义。
 
-## Accepted 玩法运行时目标
+## 玩法运行时
 
-[存档与离线结算协议](../requirements/save-offline-protocol.md)接受以下目标运行时。它尚未实现；当前仓库仍不存在 gameplay worker 或 IndexedDB gameplay save。
+[存档与离线结算协议](../requirements/save-offline-protocol.md)接受的以下运行时已用于阶段 1 至 2C：
 
 ```text
 main thread UI / rendering
@@ -36,7 +36,7 @@ main thread UI / rendering
    generator worker ─► terrain WASM ─► terrain chunk cache
 ```
 
-目标架构把 gameplay worker 设为玩法状态、事件时间、离线快进和存档的唯一写入者。现有 generator worker 继续独占 terrain WASM 调用。两条 worker 边界不能合并，也不能让 main thread 直接改写 gameplay state。
+gameplay worker 是玩法状态、事件时间、离线快进和存档的唯一写入者。generator worker 继续独占 terrain WASM 调用。两条 worker 边界不能合并，main thread 不能直接改写 gameplay state。
 
 ## 分层职责
 
@@ -46,7 +46,7 @@ main thread UI / rendering
 | 玩家世界状态 | 已揭示地图、可见目标、特殊发现和未来玩家改动 | 改写确定性基础地形 |
 | 导航与碰撞 | Accepted fixed-point `WorldPoint`、角色圆、weighted Theta*、通行成本、可达性与整数毫秒 motion event | 从纹理颜色或 mask 反推规则，或读取迷雾后 terrain |
 | 玩法模拟 | 任务、技能、遭遇、战斗、奖励和时间推进 | 依赖帧率或渲染结果 |
-| 持久化 | 保存版本化玩家状态和已结算结果 | 当前尚未实现，不得由 `localStorage` 调试设置冒充 |
+| 持久化 | 通过 IndexedDB 四-store 事务保存版本化玩家状态和已结算结果 | 由 `localStorage` 调试设置冒充 gameplay save |
 | streaming | 请求、epoch、优先级、cache 和失败策略 | 改变生成语义 |
 | 渲染 | 展示已有 world/chunk/texture 数据 | 成为世界数据唯一持有者 |
 
@@ -54,6 +54,9 @@ main thread UI / rendering
 
 - `rust/`：权威确定性世界生成，以及 native tests。
 - `web/src/generator-worker.ts`：唯一 WASM 生成调用桥接层。
+- `web/src/gameplay-worker.ts`：唯一 gameplay authority、离线推进和持久化协调者。
+- `web/src/gameplay/`：确定性事件引擎、内容表、严格契约、导航、玩家世界状态和 IndexedDB schema。
+- `web/src/gameplay-client.ts`：main thread 到 gameplay worker 的命令/read-model 桥接。
 - `web/src/protocol.ts`：Worker 消息类型。
 - `web/src/chunk-manager.ts`：请求生命周期、epoch 和内存 chunk cache。
 - `web/src/renderer.ts`：Canvas2D 世界背景、底色、网格、surface cache 和完整静态纹理。
@@ -76,7 +79,7 @@ main thread UI / rendering
 
 - 世界生成：[世界生成架构](world-generation.md)。
 - 玩法与玩家状态：[玩法状态边界](gameplay-state.md)。
-- 存档与离线恢复：[存档与离线结算协议](../requirements/save-offline-protocol.md)（Accepted，尚未实现）。
+- 存档与离线恢复：[存档与离线结算协议](../requirements/save-offline-protocol.md)；阶段 2C 精确增量见[阶段 2C 运行时契约](../specifications/phase-2c-runtime-contracts.md)。
 - 自由向量移动、导航、迷雾与目标索取：[移动协议](../requirements/movement-navigation-protocol.md)（Accepted；fixtures 与 benchmark 属于实现验收）。
 - Worker、streaming 与渲染：[Streaming 与渲染](streaming-rendering.md)。
 - 纹理文件：[Terrain Sheet v3](../specifications/terrain-sheet-v3.md)。
@@ -84,7 +87,6 @@ main thread UI / rendering
 
 ## 当前限制
 
-- 没有玩家世界状态、导航、玩法模拟或游戏持久化实现。
-- 浏览器 camera 和 chunk 坐标受 JavaScript safe integer、Rust `i64`、噪声采样和 float32 GPU 精度共同约束；当前没有经过验证的端到端范围。
-- 当前 streaming 尚未满足目标并发、优先级、失败清理和 stale epoch 错误契约。详见[当前状态](../product/current-state.md#已知技术债)。
-- Accepted 首个切片架构尚未实现；实现状态只能由源码与[当前状态](../product/current-state.md)更新，不能由规范状态推断。
+- 阶段 1 至 2C 只覆盖探索、采集、伐木、采矿、手工工艺和工具升级。战斗、死亡、叙事、工作站与锻造尚未实现。
+- gameplay 坐标使用有边界的 canonical integer `WorldPoint`；renderer 只接收 camera-relative `Number`/float。完整范围见移动协议与边界 fixture。
+- 当前实现状态、已知技术债和未实现范围以[当前状态](../product/current-state.md)为准。

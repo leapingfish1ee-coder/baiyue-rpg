@@ -12,6 +12,7 @@
 | 已实现探索实施包 | [阶段 1：探索垂直切片](engineering/phase-1-exploration-vertical-slice.md) |
 | 已实现采集实施包 | [阶段 2A：基础采集垂直切片](engineering/phase-2a-gathering-vertical-slice.md) |
 | 已实现伐木与采矿实施包 | [阶段 2B：伐木与采矿垂直切片](engineering/phase-2b-woodcutting-mining-vertical-slice.md) |
+| 已实现手工工艺与工具升级实施包 | [阶段 2C：手工工艺与工具升级垂直切片](engineering/phase-2c-crafting-tool-upgrades.md) |
 | 已确认的玩法行为和验收标准 | [需求索引](requirements/index.md) |
 | 首个可玩区域的内容与进度基线 | [首个可玩区域](requirements/first-playable-region.md) |
 | 战斗属性、公式和首轮数值 | [战斗数值系统](requirements/combat-numerics.md) |
@@ -29,12 +30,15 @@
 | 阶段 1 ID、Worker、存档、备份和性能 fixture | [阶段 1 运行时契约](specifications/phase-1-runtime-contracts.md) |
 | 阶段 2A 内容、采集、行动与存档增量 | [阶段 2A 运行时契约](specifications/phase-2a-runtime-contracts.md) |
 | 阶段 2B 多资源、工具与装备增量 | [阶段 2B 运行时契约](specifications/phase-2b-runtime-contracts.md) |
+| 阶段 2C 生产、配方与强化工具增量 | [阶段 2C 运行时契约](specifications/phase-2c-runtime-contracts.md) |
 | 已接受的资源内容放置取舍 | [Decision-0004](decisions/0004-gathering-content-placement.md) |
 | 已接受的多资源与工具实现取舍 | [Decision-0005](decisions/0005-resource-actions-and-tools.md) |
+| 已接受的手工工艺与工具升级取舍 | [Decision-0006](decisions/0006-crafting-tool-upgrade-slice.md) |
 | 本地开发和变更验证 | [开发说明](engineering/development.md)、[验证标准](engineering/validation.md) |
 | 阶段 1 本地验证结果与未覆盖项 | [阶段 1 验证记录](engineering/phase-1-validation-record.md) |
 | 阶段 2A 本地验证结果与未覆盖项 | [阶段 2A 验证记录](engineering/phase-2a-validation-record.md) |
 | 阶段 2B 本地验证结果与未覆盖项 | [阶段 2B 验证记录](engineering/phase-2b-validation-record.md) |
+| 阶段 2C 本地验证结果与未覆盖项 | [阶段 2C 验证记录](engineering/phase-2c-validation-record.md) |
 | 已接受且需要长期保留的取舍 | [决策记录](decisions/index.md) |
 | 竞品事实与可借鉴模式 | [可比游戏研究](research/comparable-games.md) |
 

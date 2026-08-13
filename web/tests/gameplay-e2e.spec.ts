@@ -93,3 +93,49 @@ test("woodcut twice with tool cancellation, re-equip, mine once, and reload with
   await expect(page.locator("#woodcutting-xp")).toContainText("20 / 100 XP");
   await expect(page.locator("#mining-xp")).toContainText("12 / 100 XP");
 });
+
+test("rope production exposes missing fiber, settles once after gathering, and survives reload", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.goto("./");
+  await expect(page.locator("#create-world")).toBeEnabled({ timeout: 30_000 });
+  await page.locator("#world-seed").fill("20260809");
+  await page.locator("#create-world").click();
+
+  await expect(page.locator("#produce-recipe option[value=rope]")).toHaveCount(1, { timeout: 30_000 });
+  await page.locator("#produce-recipe").selectOption("rope");
+  await page.locator("#produce-quantity").fill("1");
+  await page.locator("#produce-finite").click();
+  await expect(page.locator("#activity-state")).toContainText("缺少材料", { timeout: 30_000 });
+  await expect(page.locator("#materials-missing")).toContainText("纤维 缺 2（0/2）");
+
+  await page.locator("#choose-destination").click();
+  await page.locator("#destination-x").fill("14");
+  await page.locator("#destination-y").fill("20");
+  await page.locator("#destination-confirm").click();
+  await expect(page.locator("#activity-state")).toContainText("已抵达目的地", { timeout: 30_000 });
+  await expect.poll(() => page.locator("#resource-list li").filter({ hasText: "野生纤维" }).count()).toBeGreaterThanOrEqual(2);
+
+  await page.locator("#gather-target").selectOption("wild_fiber");
+  await page.locator("#gather-quantity").fill("2");
+  await page.locator("#gather-finite").click();
+  const fiberRow = page.locator("#material-list .compact-stat").filter({ hasText: "纤维" });
+  await expect(fiberRow).toHaveText(/纤维\s*2/, { timeout: 45_000 });
+
+  await page.locator("#produce-recipe").selectOption("rope");
+  await page.locator("#produce-quantity").fill("1");
+  await page.locator("#produce-finite").click();
+  await expect(page.locator("#activity-state")).toContainText("生产绳索", { timeout: 30_000 });
+  const ropeRow = page.locator("#material-list .compact-stat").filter({ hasText: "绳索" });
+  await expect(ropeRow).toHaveText(/绳索\s*1/, { timeout: 30_000 });
+  await expect(page.locator("#crafting-xp")).toContainText("12 / 100 XP");
+  await expect(page.locator("#gather-progress")).toHaveText("生产 1 / 1");
+  await expect(page.locator("#save-state")).toContainText("已保存");
+
+  await page.reload();
+  await expect(page.locator("#journey-panel")).toBeVisible({ timeout: 30_000 });
+  await expect(ropeRow).toHaveText(/绳索\s*1/);
+  await expect(page.locator("#crafting-xp")).toContainText("12 / 100 XP");
+  await expect(page.locator("#gather-progress")).toHaveText("生产 1 / 1");
+  await page.waitForTimeout(1_000);
+  await expect(ropeRow).toHaveText(/绳索\s*1/);
+});

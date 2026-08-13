@@ -196,7 +196,7 @@ skill speed
 
 `copper_blade` 的 permanent melee requirement 固定为 `近战 2`。T1 的 Accepted 首轮 combat XP 为 `30`；按当前升级曲线，从等级 `1` 到 `2` 需要 `100 XP`，因此约 `4` 次 T1 击杀达到等级 `2`，并同时取得 `raw_hide ×4`。这形成近战准入与 `hunter_coat` 材料的首轮节奏闭环；相关数值均为 Accepted 首轮平衡基线，不是试玩事实。
 
-首轮配方使用 `raw_hide` 和 `rope`；其他基础材料和中间材料的稳定 `item_id` 由内容专项在编码前补齐，不能从中文显示名自动推导。
+已实现基础材料使用 `fiber`、`softwood`、`stone` 和 `copper_ore`。阶段 2C 使用 `rope`、`reinforced_axe` 和 `reinforced_pickaxe`。尚未进入实现的战斗与锻造材料仍由对应内容专项在编码前定义，不能从中文显示名自动推导。
 
 ### 普通狩猎与新增配方
 
@@ -273,7 +273,7 @@ skill speed
 
 ## 实现、内容与验证工作
 
-- 内容专项须补齐基础材料与中间材料的稳定 `item_id`、显示名称、localization key，以及全部配方的单周期完整输出数量。
+- 战斗与锻造内容专项须补齐尚未进入实现的材料与装备 `item_id`、显示名称、localization key 和配方完整输出数量。
 - 技能与物品实现专项须在编码前把生活技能速度来源到行动持续时间的统一公式写入需求和 fixtures。
 - 存档专项须写明物品定义、库存状态的 schema、持久化表示及游戏规则/内容版本边界。
 - 验证专项须归档模拟脚本、gameplay seed、完整 fixtures，以及包含路径恢复的装备平衡验证。

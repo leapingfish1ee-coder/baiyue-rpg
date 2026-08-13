@@ -68,12 +68,26 @@
               <p id="task-warning" class="task-warning" hidden></p>
             </div>
             <p id="gather-unknown" class="empty-copy">尚未发现资源。</p>
+            <div class="section-subheading"><strong>生产</strong><span>手工工艺</span></div>
+            <div id="produce-controls">
+              <label for="produce-recipe">配方</label>
+              <select id="produce-recipe"></select>
+              <p id="recipe-detail" class="recipe-detail"></p>
+              <label for="produce-quantity">数量</label>
+              <input id="produce-quantity" inputmode="numeric" value="1" />
+              <div class="compact-actions">
+                <button id="produce-finite" class="primary" type="button">生产 ×1</button>
+                <button id="produce-continuous" type="button">持续生产</button>
+              </div>
+              <p id="materials-missing" class="task-warning" hidden></p>
+            </div>
           </section>
           <section aria-labelledby="skills-heading">
             <div class="section-heading"><strong id="skills-heading">技能</strong><span>首轮平衡基线</span></div>
             <div class="compact-stat"><span id="gathering-level">采集 Lv.1</span><span id="gathering-xp">0 / 100 XP</span><small id="gathering-speed">0 bps</small></div>
             <div class="compact-stat"><span id="woodcutting-level">伐木 Lv.1</span><span id="woodcutting-xp">0 / 100 XP</span><small id="woodcutting-speed">0 bps</small></div>
             <div class="compact-stat"><span id="mining-level">采矿 Lv.1</span><span id="mining-xp">0 / 100 XP</span><small id="mining-speed">0 bps</small></div>
+            <div class="compact-stat"><span id="crafting-level">工艺 Lv.1</span><span id="crafting-xp">0 / 100 XP</span><small id="crafting-speed">0 bps</small></div>
           </section>
           <section aria-labelledby="inventory-heading">
             <div class="section-heading"><strong id="inventory-heading">库存</strong><span>无容量限制</span></div>
@@ -85,8 +99,10 @@
           </section>
           <section aria-labelledby="equipment-heading">
             <div class="section-heading"><strong id="equipment-heading">装备</strong><span>不自动装备</span></div>
-            <div class="equipment-row"><span>斧</span><strong id="axe-equipped">—</strong><button id="axe-toggle" type="button">卸下</button></div>
-            <div class="equipment-row"><span>镐</span><strong id="pickaxe-equipped">—</strong><button id="pickaxe-toggle" type="button">卸下</button></div>
+            <div class="equipment-row equipment-choice"><span>斧</span><strong id="axe-equipped">—</strong><select id="axe-choice" aria-label="选择斧"></select><button id="axe-toggle" type="button">卸下</button></div>
+            <small id="axe-detail" class="equipment-detail"></small>
+            <div class="equipment-row equipment-choice"><span>镐</span><strong id="pickaxe-equipped">—</strong><select id="pickaxe-choice" aria-label="选择镐"></select><button id="pickaxe-toggle" type="button">卸下</button></div>
+            <small id="pickaxe-detail" class="equipment-detail"></small>
           </section>
           <section aria-labelledby="resources-heading">
             <div class="section-heading"><strong id="resources-heading">已知资源</strong><span id="resource-count">0</span></div>

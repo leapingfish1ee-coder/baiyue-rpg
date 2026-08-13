@@ -69,7 +69,7 @@
 - [玩法界面信息架构](gameplay-information-architecture.md)：map-first shell、单一 drawer、任务/地图/技能/库存/线索/存档 UI、stable reasons 和 Worker/UI contract。
 - [自由向量移动、导航、迷雾与目标索取协议](movement-navigation-protocol.md)：fixed-point `WorldPoint`、weighted Basic Theta*、swept-circle collision、整数毫秒事件、永久迷雾、稳定目标索取、精确死亡位置与 `RevivalGrace`。
 
-七份规范由 [Decision-0003](../decisions/0003-first-playable-slice-baseline.md) 统一接受。阶段 1 设计已 Ready for implementation；规定 fixtures、benchmark、内容表和专项 contract 属于实现验收，不是产品方向门禁。
+七份规范由 [Decision-0003](../decisions/0003-first-playable-slice-baseline.md) 统一接受。阶段 1 至 2C 已实现探索与生活技能子集；战斗、死亡、叙事、工作站和锻造仍是未实现范围。规定 fixtures、benchmark、内容表和专项 contract 属于实现验收，不是产品方向门禁。
 
 ## 首个端到端版本
 

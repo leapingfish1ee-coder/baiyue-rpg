@@ -1,10 +1,11 @@
 import { BASE_TERRAIN_ID, NAV_UNITS_PER_TILE, RUNTIME_CHUNK_SIZE, isTileCoordinateInBounds } from "../world-contract.ts";
-import { CONTENT_VERSION, type SeedDecimal, type WorldPoint } from "./contracts.ts";
+import type { SeedDecimal, WorldPoint } from "./contracts.ts";
 import { revealTile, type FogMap } from "./fog.ts";
 import { floorDiv, tileCenter } from "./math.ts";
 import { PlannerStepper, TerrainSnapshot, type RoutePlan } from "./navigation.ts";
 
 export const CONTENT_CELL_SIZE_TILES = 32n;
+export const CONTENT_PLACEMENT_VERSION = 3 as const;
 
 export const RESOURCE_PROTOTYPE_ORDER = [
   "wild_fiber",
@@ -15,9 +16,14 @@ export const RESOURCE_PROTOTYPE_ORDER = [
 export type ResourcePrototypeId = typeof RESOURCE_PROTOTYPE_ORDER[number];
 export type ResourceTaskKind = "Gather" | "Woodcut" | "Mine";
 export type ResourceSkillId = "gathering" | "woodcutting" | "mining";
-export type MaterialItemId = "fiber" | "softwood" | "stone" | "copper_ore";
+export type CraftingSkillId = "crafting";
+export type SkillId = ResourceSkillId | CraftingSkillId;
+export type BaseMaterialItemId = "fiber" | "softwood" | "stone" | "copper_ore";
+export type MaterialItemId = BaseMaterialItemId | "rope";
 export type ToolSlot = "axe" | "pickaxe";
-export type ToolItemId = "worn_axe" | "worn_pickaxe";
+export type ToolItemId = "worn_axe" | "worn_pickaxe" | "reinforced_axe" | "reinforced_pickaxe";
+export type ItemId = MaterialItemId | ToolItemId;
+export type RecipeId = "rope" | "reinforced_axe" | "reinforced_pickaxe";
 
 export type ResourceDefinition = Readonly<{
   prototypeId: ResourcePrototypeId;
@@ -63,15 +69,65 @@ export const RESOURCE_DEFINITIONS = {
 export const TOOL_DEFINITIONS = {
   worn_axe: { itemId: "worn_axe", displayName: "破旧斧", slot: "axe", tier: 0, speedBps: 0, requiredSkill: "woodcutting", requiredLevel: 1 },
   worn_pickaxe: { itemId: "worn_pickaxe", displayName: "破旧镐", slot: "pickaxe", tier: 0, speedBps: 0, requiredSkill: "mining", requiredLevel: 1 },
+  reinforced_axe: { itemId: "reinforced_axe", displayName: "强化斧", slot: "axe", tier: 1, speedBps: 1_000, requiredSkill: "woodcutting", requiredLevel: 2 },
+  reinforced_pickaxe: { itemId: "reinforced_pickaxe", displayName: "强化镐", slot: "pickaxe", tier: 1, speedBps: 1_000, requiredSkill: "mining", requiredLevel: 2 },
 } as const satisfies Record<ToolItemId, Readonly<{
   itemId: ToolItemId;
-  displayName: "破旧斧" | "破旧镐";
+  displayName: "破旧斧" | "破旧镐" | "强化斧" | "强化镐";
   slot: ToolSlot;
   tier: number;
   speedBps: number;
   requiredSkill: "woodcutting" | "mining";
   requiredLevel: number;
 }>>;
+
+export type RecipeDefinition = Readonly<{
+  recipeId: RecipeId;
+  displayName: "绳索" | "强化斧" | "强化镐";
+  skillId: "crafting";
+  requiredLevel: number;
+  inputs: readonly Readonly<{ itemId: MaterialItemId; displayName: "纤维" | "软木" | "石料" | "绳索"; quantity: number }>[];
+  baseDurationMs: bigint;
+  output: Readonly<{ itemId: ItemId; displayName: "绳索" | "强化斧" | "强化镐"; quantity: 1 }>;
+  xp: number;
+  station: null;
+}>;
+
+export const RECIPE_ORDER = ["rope", "reinforced_axe", "reinforced_pickaxe"] as const satisfies readonly RecipeId[];
+
+export const RECIPE_DEFINITIONS = {
+  rope: {
+    recipeId: "rope", displayName: "绳索", skillId: "crafting", requiredLevel: 1,
+    inputs: [{ itemId: "fiber", displayName: "纤维", quantity: 2 }],
+    baseDurationMs: 12_000n, output: { itemId: "rope", displayName: "绳索", quantity: 1 }, xp: 12, station: null,
+  },
+  reinforced_axe: {
+    recipeId: "reinforced_axe", displayName: "强化斧", skillId: "crafting", requiredLevel: 2,
+    inputs: [
+      { itemId: "softwood", displayName: "软木", quantity: 4 },
+      { itemId: "rope", displayName: "绳索", quantity: 2 },
+      { itemId: "stone", displayName: "石料", quantity: 2 },
+    ],
+    baseDurationMs: 30_000n, output: { itemId: "reinforced_axe", displayName: "强化斧", quantity: 1 }, xp: 30, station: null,
+  },
+  reinforced_pickaxe: {
+    recipeId: "reinforced_pickaxe", displayName: "强化镐", skillId: "crafting", requiredLevel: 2,
+    inputs: [
+      { itemId: "softwood", displayName: "软木", quantity: 4 },
+      { itemId: "rope", displayName: "绳索", quantity: 2 },
+      { itemId: "stone", displayName: "石料", quantity: 3 },
+    ],
+    baseDurationMs: 30_000n, output: { itemId: "reinforced_pickaxe", displayName: "强化镐", quantity: 1 }, xp: 30, station: null,
+  },
+} as const satisfies Record<RecipeId, RecipeDefinition>;
+
+export function isRecipeId(value: unknown): value is RecipeId {
+  return typeof value === "string" && (RECIPE_ORDER as readonly string[]).includes(value);
+}
+
+export function recipeDefinition(recipeId: RecipeId): RecipeDefinition {
+  return RECIPE_DEFINITIONS[recipeId];
+}
 
 export const WILD_FIBER_PROTOTYPE_ID = "wild_fiber" as const;
 export const FIBER_ITEM_ID = "fiber" as const;
@@ -137,7 +193,7 @@ function fnv1a64(text: string): bigint {
 }
 
 function contentDomain(seed: SeedDecimal, campAnchor: WorldPoint, prototypeId: ResourcePrototypeId): string {
-  return `${seed}|${CONTENT_VERSION}|${prototypeId}|${campAnchor.x}|${campAnchor.y}`;
+  return `${seed}|${CONTENT_PLACEMENT_VERSION}|${prototypeId}|${campAnchor.x}|${campAnchor.y}`;
 }
 
 function pointForTile(tileX: bigint, tileY: bigint): WorldPoint {
@@ -353,4 +409,16 @@ export function authoritativeResourceDuration(
 export function authoritativeGatherDuration(level: number): Readonly<{ durationMs: bigint; skillSpeedBps: number }> {
   const result = authoritativeResourceDuration("wild_fiber", level);
   return { durationMs: result.durationMs, skillSpeedBps: result.skillSpeedBps };
+}
+
+export function authoritativeCraftingDuration(
+  recipeId: RecipeId,
+  level: number,
+): Readonly<{ durationMs: bigint; skillSpeedBps: number; totalSpeedBps: number }> {
+  const definition = recipeDefinition(recipeId);
+  if (!Number.isInteger(level) || level < 1 || level > 100) throw new RangeError("crafting level must be 1..100");
+  const skillSpeedBps = Math.min(Math.max(level - definition.requiredLevel, 0) * 50, 2_500);
+  const duration = (definition.baseDurationMs * 10_000n + BigInt(10_000 + skillSpeedBps) - 1n) / BigInt(10_000 + skillSpeedBps);
+  const floorDuration = (definition.baseDurationMs * 2_500n + 9_999n) / 10_000n;
+  return { durationMs: duration > floorDuration ? duration : floorDuration, skillSpeedBps, totalSpeedBps: skillSpeedBps };
 }
