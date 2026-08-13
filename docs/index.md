@@ -9,8 +9,9 @@
 | 项目为何存在、面向什么体验 | [产品愿景](product/vision.md) |
 | 当前已实现、未实现和技术债 | [当前状态](product/current-state.md) |
 | 下一阶段按什么顺序推进 | [路线图](product/roadmap.md) |
-| 当前首个端到端实施包 | [阶段 1：探索垂直切片](engineering/phase-1-exploration-vertical-slice.md) |
-| 当前采集实施包 | [阶段 2A：基础采集垂直切片](engineering/phase-2a-gathering-vertical-slice.md)（Implemented） |
+| 已实现探索实施包 | [阶段 1：探索垂直切片](engineering/phase-1-exploration-vertical-slice.md) |
+| 已实现采集实施包 | [阶段 2A：基础采集垂直切片](engineering/phase-2a-gathering-vertical-slice.md) |
+| 已实现伐木与采矿实施包 | [阶段 2B：伐木与采矿垂直切片](engineering/phase-2b-woodcutting-mining-vertical-slice.md) |
 | 已确认的玩法行为和验收标准 | [需求索引](requirements/index.md) |
 | 首个可玩区域的内容与进度基线 | [首个可玩区域](requirements/first-playable-region.md) |
 | 战斗属性、公式和首轮数值 | [战斗数值系统](requirements/combat-numerics.md) |
@@ -27,10 +28,13 @@
 | Terrain Sheet 文件格式 | [Terrain Sheet v3](specifications/terrain-sheet-v3.md) |
 | 阶段 1 ID、Worker、存档、备份和性能 fixture | [阶段 1 运行时契约](specifications/phase-1-runtime-contracts.md) |
 | 阶段 2A 内容、采集、行动与存档增量 | [阶段 2A 运行时契约](specifications/phase-2a-runtime-contracts.md) |
+| 阶段 2B 多资源、工具与装备增量 | [阶段 2B 运行时契约](specifications/phase-2b-runtime-contracts.md) |
 | 已接受的资源内容放置取舍 | [Decision-0004](decisions/0004-gathering-content-placement.md) |
+| 已接受的多资源与工具实现取舍 | [Decision-0005](decisions/0005-resource-actions-and-tools.md) |
 | 本地开发和变更验证 | [开发说明](engineering/development.md)、[验证标准](engineering/validation.md) |
 | 阶段 1 本地验证结果与未覆盖项 | [阶段 1 验证记录](engineering/phase-1-validation-record.md) |
 | 阶段 2A 本地验证结果与未覆盖项 | [阶段 2A 验证记录](engineering/phase-2a-validation-record.md) |
+| 阶段 2B 本地验证结果与未覆盖项 | [阶段 2B 验证记录](engineering/phase-2b-validation-record.md) |
 | 已接受且需要长期保留的取舍 | [决策记录](decisions/index.md) |
 | 竞品事实与可借鉴模式 | [可比游戏研究](research/comparable-games.md) |
 

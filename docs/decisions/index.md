@@ -8,5 +8,6 @@ Decision Record 保存待确认或已接受的产品与架构取舍。Proposed �
 | [0002](0002-skill-task-system-baseline.md) | Accepted | 技能与任务系统设计基线；产品语义与首轮平衡参数分离 |
 | [0003](0003-first-playable-slice-baseline.md) | Accepted | 首个端到端可玩切片设计基线；七份规范统一封板 |
 | [0004](0004-gathering-content-placement.md) | Accepted | 阶段 2A 资源内容采用绝对 content cell 与营地保证层 |
+| [0005](0005-resource-actions-and-tools.md) | Accepted | 阶段 2B 保留显式任务类别并共享资源执行器；只实现实际使用的斧与镐槽位 |
 
 新增决策使用[决策模板](../templates/decision.md)。一般情况下，已发布决策变化时新增记录并标记 supersedes/superseded by。MVP/demo 产品需求例外：负责人确认新规则后，直接修订需求真源并删除旧规则，不为了旧需求增加兼容层；Decision Record 只保留仍有解释价值的取舍。

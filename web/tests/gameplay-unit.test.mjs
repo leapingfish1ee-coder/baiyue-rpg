@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import { canonicalJson, compareCodePoints } from "../src/gameplay/canonical-json.ts";
-import { ambientPlacementCandidate, authoritativeGatherDuration, contentCellForTile } from "../src/gameplay/content.ts";
+import { ambientPlacementCandidate, authoritativeGatherDuration, authoritativeResourceDuration, contentCellForTile, resolveAmbientPlacementConflicts } from "../src/gameplay/content.ts";
 import { GameplayEngine } from "../src/gameplay/engine.ts";
 import { revealObservation, revealTile, revealedTiles } from "../src/gameplay/fog.ts";
 import { selectIntersectingCircleByStableId, sweptSegmentIntersectsCircle } from "../src/gameplay/geometry.ts";
@@ -364,18 +364,42 @@ function createLandEngine() {
   return { engine, requests };
 }
 
-test("phase 2A content placement fixes three reachable camp guarantees and Euclidean negative cells", () => {
+function driveToAction(engine) {
+  for (let iteration = 0; iteration < 2_000 && engine.snapshot().activityState !== "acting"; iteration += 1) {
+    driveEngine(engine, () => new Uint8Array(4096).fill(3));
+    const activity = engine.toReadModel().activity;
+    if (activity.state === "moving") engine.advanceBy(BigInt(activity.etaMs));
+  }
+  assert.equal(engine.snapshot().activityState, "acting", JSON.stringify(engine.toReadModel().activity));
+  return engine.toReadModel().activity.action;
+}
+
+test("phase 2B content placement fixes eight reachable guarantees, boundary copper, negative cells, and conflict order", () => {
   const { engine } = createLandEngine();
   assert.deepEqual(engine.guaranteePlacements, [
-    { placementId: "place:wild-fiber:guarantee:initial-observation", prototypeId: "wild_fiber", source: "guarantee", tileX: "2", tileY: "-3", point: { x: "2560", y: "-2560" } },
-    { placementId: "place:wild-fiber:guarantee:ring-a", prototypeId: "wild_fiber", source: "guarantee", tileX: "7", tileY: "-18", point: { x: "7680", y: "-17920" } },
-    { placementId: "place:wild-fiber:guarantee:ring-b", prototypeId: "wild_fiber", source: "guarantee", tileX: "15", tileY: "-20", point: { x: "15872", y: "-19968" } },
+    { placementId: "place:wild-fiber:guarantee:initial-observation", prototypeId: "wild_fiber", source: "guarantee", tileX: "2", tileY: "-2", point: { x: "2560", y: "-1536" } },
+    { placementId: "place:softwood-tree:guarantee:initial-observation", prototypeId: "softwood_tree", source: "guarantee", tileX: "-3", tileY: "-1", point: { x: "-2560", y: "-512" } },
+    { placementId: "place:surface-stone:guarantee:initial-observation", prototypeId: "surface_stone", source: "guarantee", tileX: "-2", tileY: "0", point: { x: "-1536", y: "512" } },
+    { placementId: "place:wild-fiber:guarantee:ring-a", prototypeId: "wild_fiber", source: "guarantee", tileX: "10", tileY: "-8", point: { x: "10752", y: "-7680" } },
+    { placementId: "place:wild-fiber:guarantee:ring-b", prototypeId: "wild_fiber", source: "guarantee", tileX: "10", tileY: "20", point: { x: "10752", y: "20992" } },
+    { placementId: "place:softwood-tree:guarantee:ring-a", prototypeId: "softwood_tree", source: "guarantee", tileX: "-6", tileY: "2", point: { x: "-5632", y: "2560" } },
+    { placementId: "place:surface-stone:guarantee:ring-a", prototypeId: "surface_stone", source: "guarantee", tileX: "-10", tileY: "8", point: { x: "-9728", y: "8704" } },
+    { placementId: "place:shallow-copper-deposit:guarantee:boundary-a", prototypeId: "shallow_copper_deposit", source: "guarantee", tileX: "71", tileY: "4", point: { x: "73216", y: "4608" } },
   ]);
+  const copper = engine.guaranteePlacements.at(-1);
+  assert.equal(BigInt(copper.tileX) / 64n, 1n, "copper is outside the starting chunk and inside the surrounding 3×3 chunks");
+  assert.ok(Math.max(Math.abs(Number(copper.tileX)), Math.abs(Number(copper.tileY))) >= 64);
   const ambient = ambientPlacementCandidate("20260809", { x: "512", y: "512" }, -1n, -1n);
   assert.equal(contentCellForTile(BigInt(ambient.tileX)), -1n);
   assert.equal(contentCellForTile(BigInt(ambient.tileY)), -1n);
   assert.deepEqual(authoritativeGatherDuration(1), { durationMs: 6000n, skillSpeedBps: 0 });
-  assert.deepEqual(engine.toReadModel().knownTargetPrototypeIds, ["wild_fiber"]);
+  const collisionPoint = { x: "512", y: "512" };
+  const collision = ["shallow_copper_deposit", "surface_stone", "softwood_tree", "wild_fiber"].map((prototypeId) => ({
+    placementId: `place:${prototypeId.replaceAll("_", "-")}:ambient:0:0`, prototypeId, source: "ambient", tileX: "0", tileY: "0", point: collisionPoint,
+  }));
+  assert.deepEqual(resolveAmbientPlacementConflicts(collision).map((candidate) => candidate.prototypeId), ["wild_fiber"]);
+  assert.deepEqual(resolveAmbientPlacementConflicts(collision, new Set(["0,0"])), [], "guarantee occupancy wins over ambient");
+  assert.deepEqual(engine.toReadModel().knownTargetPrototypeIds, ["wild_fiber", "softwood_tree", "surface_stone"]);
 });
 
 test("one 6000ms gather action atomically depletes the node and settles fiber, XP, and task count", () => {
@@ -387,6 +411,7 @@ test("one 6000ms gather action atomically depletes the node and settles fiber, X
     if (activity.state === "moving") engine.advanceBy(BigInt(activity.etaMs));
   }
   const action = engine.toReadModel().activity.action;
+  const actionPlacementId = action?.placementId;
   assert.equal(action?.durationMs, "6000");
   assert.equal(action?.remainingMs, "6000");
   assert.equal(action?.skillSpeedBps, 0);
@@ -394,7 +419,9 @@ test("one 6000ms gather action atomically depletes the node and settles fiber, X
   const reloaded = new GameplayEngine(3);
   reloaded.restore({
     seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: saved.position, campAnchor: saved.campAnchor,
-    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, fiber: saved.fiber, task: saved.task,
+    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: saved.miningXp,
+    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre,
+    wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, equipment: saved.equipment, task: saved.task,
     executionState: saved.execution.state, routePurpose: saved.execution.routePurpose,
     targetPlacementId: saved.execution.targetPlacementId, action: saved.execution.action,
     waitingReason: saved.execution.waitingReason, worldChunks: saved.worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
@@ -409,7 +436,7 @@ test("one 6000ms gather action atomically depletes the node and settles fiber, X
   assert.equal(settled.task?.kind, "Gather");
   assert.equal(settled.task?.completedQuantity, 1);
   assert.equal(settled.activityState, "waiting");
-  assert.equal(engine.toReadModel().map.resourcePlacements[0]?.state, "depleted");
+  assert.equal(engine.toReadModel().map.resourcePlacements.find((placement) => placement.placementId === actionPlacementId)?.state, "depleted");
   assert.equal(engine.needsImmediateCommit, true);
   assert.equal(reloaded.advanceBy(6000n), 0n);
   assert.deepEqual(
@@ -417,6 +444,80 @@ test("one 6000ms gather action atomically depletes the node and settles fiber, X
     { fiber: settled.fiber, gatheringXp: settled.gatheringXp, task: settled.task, placements: engine.toReadModel().map.resourcePlacements },
     "one-shot offline-style advance and reload use the same action settlement",
   );
+});
+
+test("shared resource settlement handles wood, stone, MissingTool cancellation, and re-equip", () => {
+  const { engine } = createLandEngine();
+  engine.setTask("cmd:0123456789abcdef:100", { kind: "Woodcut", targetPrototypeId: "softwood_tree", quantity: 2 });
+  let action = driveToAction(engine);
+  assert.deepEqual({ base: action.baseDurationMs, duration: action.durationMs, skill: action.skillSpeedBps, tool: action.toolSpeedBps },
+    { base: "10000", duration: "10000", skill: 0, tool: 0 });
+  engine.advanceBy(10_000n);
+  assert.deepEqual({ softwood: engine.snapshot().softwood, xp: engine.snapshot().woodcuttingXp, completed: engine.snapshot().task.completedQuantity },
+    { softwood: 1, xp: 10, completed: 1 });
+  engine.acknowledgeImmediateCommit();
+
+  action = driveToAction(engine);
+  engine.advanceBy(2_500n);
+  engine.unequipSlot("axe");
+  assert.equal(engine.toReadModel().activity.reason?.code, "MissingTool");
+  assert.equal(engine.toReadModel().equipment.axe, null);
+  assert.equal(engine.snapshot().softwood, 1, "cancelled partial cycle grants no material");
+  assert.equal(engine.snapshot().woodcuttingXp, 10, "cancelled partial cycle grants no XP");
+  engine.advanceBy(10_000n);
+  assert.equal(engine.snapshot().softwood, 1);
+  engine.equipItem("worn_axe");
+  action = driveToAction(engine);
+  engine.advanceBy(BigInt(action.durationMs));
+  assert.deepEqual({ softwood: engine.snapshot().softwood, xp: engine.snapshot().woodcuttingXp, completed: engine.snapshot().task.completedQuantity },
+    { softwood: 2, xp: 20, completed: 2 });
+  engine.acknowledgeImmediateCommit();
+
+  engine.setTask("cmd:0123456789abcdef:101", { kind: "Mine", targetPrototypeId: "surface_stone", quantity: 1 });
+  action = driveToAction(engine);
+  assert.equal(action.durationMs, "12000");
+  engine.advanceBy(12_000n);
+  assert.deepEqual({ stone: engine.snapshot().stone, xp: engine.snapshot().miningXp, completed: engine.snapshot().task.completedQuantity },
+    { stone: 1, xp: 12, completed: 1 });
+  assert.deepEqual(authoritativeResourceDuration("shallow_copper_deposit", 5, 0), {
+    durationMs: 18_000n, skillSpeedBps: 0, toolSpeedBps: 0, totalSpeedBps: 0,
+  });
+});
+
+test("mining 5 can claim and settle the guaranteed boundary copper deposit", () => {
+  const { engine: created } = createLandEngine();
+  const saved = created.persistedState();
+  const copperDefinition = created.guaranteePlacements.find((placement) => placement.prototypeId === "shallow_copper_deposit");
+  assert.ok(copperDefinition);
+  const copperPlacement = {
+    ...copperDefinition, availability: "active", spawnCycle: 0, depletedWorldTimeMs: null, nextAvailableWorldTimeMs: null,
+  };
+  const chunkKey = `${BigInt(copperDefinition.tileX) / 64n},${BigInt(copperDefinition.tileY) / 64n}`;
+  const worldChunks = saved.worldChunks.map((chunk) => ({ ...chunk, knownPlacements: [...chunk.knownPlacements] }));
+  const copperChunk = worldChunks.find((chunk) => chunk.chunkKey === chunkKey);
+  if (copperChunk === undefined) worldChunks.push({ chunkKey, revealedBase64: Buffer.alloc(512, 255).toString("base64"), knownPlacements: [copperPlacement] });
+  else {
+    copperChunk.revealedBase64 = Buffer.alloc(512, 255).toString("base64");
+    copperChunk.knownPlacements.push(copperPlacement);
+  }
+
+  const engine = new GameplayEngine(3);
+  engine.restore({
+    seed: saved.seed, worldTimeMs: saved.worldTimeMs, position: copperDefinition.point, campAnchor: saved.campAnchor,
+    totalXp: saved.totalXp, gatheringXp: saved.gatheringXp, woodcuttingXp: saved.woodcuttingXp, miningXp: xpAtLevelStart(5),
+    fiber: saved.fiber, softwood: saved.softwood, stone: saved.stone, copperOre: saved.copperOre,
+    wornAxe: saved.wornAxe, wornPickaxe: saved.wornPickaxe, equipment: saved.equipment, task: null,
+    executionState: "idle", routePurpose: null, targetPlacementId: null, action: null, waitingReason: null,
+    worldChunks, nextEventOrdinal: saved.nextEventOrdinal,
+  });
+  driveEngine(engine, () => new Uint8Array(4096).fill(3));
+  engine.setTask("cmd:0123456789abcdef:102", { kind: "Mine", targetPrototypeId: "shallow_copper_deposit", quantity: 1 });
+  const action = driveToAction(engine);
+  assert.equal(action.placementId, copperDefinition.placementId);
+  assert.equal(action.durationMs, "18000");
+  engine.advanceBy(18_000n);
+  assert.deepEqual({ ore: engine.snapshot().copperOre, xp: engine.snapshot().miningXp - xpAtLevelStart(5), completed: engine.snapshot().task.completedQuantity },
+    { ore: 1, xp: 23, completed: 1 });
 });
 
 test("pure engine closes create world, explore, advance, and cancel with explicit terrain effects", () => {

@@ -1,10 +1,11 @@
 import { CHUNK_COORDINATE_MAX, CHUNK_COORDINATE_MIN, WORLD_POINT_NAV_MAX, WORLD_POINT_NAV_MIN } from "../world-contract.ts";
+import type { MaterialItemId, ResourcePrototypeId, ResourceSkillId, ResourceTaskKind, ToolItemId, ToolSlot } from "./content.ts";
 
 export const GAMEPLAY_PROTOCOL_VERSION = 1 as const;
 export const DB_SCHEMA_VERSION = 1 as const;
-export const SAVE_SCHEMA_VERSION = 2 as const;
-export const GAME_RULES_VERSION = 2 as const;
-export const CONTENT_VERSION = 2 as const;
+export const SAVE_SCHEMA_VERSION = 3 as const;
+export const GAME_RULES_VERSION = 3 as const;
+export const CONTENT_VERSION = 3 as const;
 export const EXPORT_FORMAT_VERSION = 1 as const;
 export const SAVE_ID = "save:local" as const;
 
@@ -35,6 +36,7 @@ export type ActivityReason =
   | Readonly<{ code: "TaskCompleted"; params: null; allowedActions: readonly ["set_task"]; diagnosticId: null }>
   | Readonly<{ code: "NoReachableTargetOrFrontier"; params: null; allowedActions: readonly ["set_task"]; diagnosticId: null }>
   | Readonly<{ code: "DestinationUnreachable"; params: Readonly<{ destination: WorldPoint }>; allowedActions: readonly ["set_task"]; diagnosticId: null }>
+  | Readonly<{ code: "MissingTool"; params: Readonly<{ slot: ToolSlot; minimumTier: SafeUint }>; allowedActions: readonly ["equip_item", "set_task"]; diagnosticId: null }>
   | Readonly<{ code: "storage_write_failed"; params: null; allowedActions: readonly ["open_system", "export", "reset", "retry"]; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "incompatible_save"; params: Readonly<{ expected: U32; actual: U32; version: "db" | "save" | "rules" | "content" | "generator" }>; allowedActions: readonly ["export", "reset"]; diagnosticId: DiagnosticId }>
   | Readonly<{ code: "active_in_other_tab"; params: null; allowedActions: readonly ["retry"]; diagnosticId: null }>
@@ -56,7 +58,8 @@ export type CommandError =
   | Readonly<{ code: "command/id_conflict"; params: Readonly<{ commandId: CommandId }>; diagnosticId: null }>
   | Readonly<{ code: "command/invalid_seed"; params: null; diagnosticId: null }>
   | Readonly<{ code: "command/invalid_destination"; params: Readonly<{ destination: WorldPoint }>; diagnosticId: null }>
-  | Readonly<{ code: "command/unknown_target_prototype" | "command/content_placement_failed"; params: null; diagnosticId: null }>
+  | Readonly<{ code: "command/unknown_target_prototype" | "command/content_placement_failed" | "command/item_unavailable" | "command/invalid_equipment"; params: null; diagnosticId: null }>
+  | Readonly<{ code: "command/skill_level_too_low"; params: Readonly<{ prototypeId: ResourcePrototypeId; skillId: ResourceSkillId; requiredLevel: SafeUint; actualLevel: SafeUint }>; diagnosticId: null }>
   | Readonly<{ code: "command/confirmation_required"; params: Readonly<{ command: "ImportSave" | "ResetSave" }>; diagnosticId: null }>
   | Readonly<{ code: "save/not_found"; params: null; diagnosticId: null }>
   | Readonly<{ code: "save/incompatible_version"; params: Readonly<{ expected: U32; actual: U32; version: "db" | "save" | "rules" | "content" | "generator" }>; diagnosticId: DiagnosticId }>
@@ -83,20 +86,42 @@ export type GatherTask = Readonly<{
   createdWorldTimeMs: WorldTimeDecimal;
 }>;
 
-export type TaskIntent = ExploreTask | GatherTask;
+export type WoodcutTask = Readonly<{
+  taskId: TaskId;
+  kind: "Woodcut";
+  targetPrototypeId: "softwood_tree";
+  quantity: SafeUint | null;
+  completedQuantity: SafeUint;
+  createdWorldTimeMs: WorldTimeDecimal;
+}>;
+
+export type MineTask = Readonly<{
+  taskId: TaskId;
+  kind: "Mine";
+  targetPrototypeId: "surface_stone" | "shallow_copper_deposit";
+  quantity: SafeUint | null;
+  completedQuantity: SafeUint;
+  createdWorldTimeMs: WorldTimeDecimal;
+}>;
+
+export type ResourceTask = GatherTask | WoodcutTask | MineTask;
+export type TaskIntent = ExploreTask | ResourceTask;
 
 export type ResourceActionSummary = Readonly<{
   actionId: ActionId;
   placementId: PlacementId;
-  prototypeId: "wild_fiber";
+  prototypeId: ResourcePrototypeId;
+  baseDurationMs: WorldTimeDecimal;
   durationMs: WorldTimeDecimal;
   remainingMs: WorldTimeDecimal;
   skillSpeedBps: SafeUint;
+  toolSpeedBps: SafeUint;
+  totalSpeedBps: SafeUint;
 }>;
 
 export type Activity = Readonly<{
   state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
-  phase: "idle" | "exploring" | "acquiring_target" | "moving_to_target" | "gathering" | "auto_exploring" | "waiting" | "paused";
+  phase: "idle" | "exploring" | "acquiring_target" | "moving_to_target" | "resource_action" | "auto_exploring" | "waiting" | "paused";
   route: readonly WorldPoint[];
   routePurpose: "explore" | "task_target" | "auto_explore" | null;
   routeIndex: SafeUint;
@@ -109,8 +134,14 @@ export type Activity = Readonly<{
 
 export type ResourcePlacementSummary = Readonly<{
   placementId: PlacementId;
-  prototypeId: "wild_fiber";
-  displayName: "野生纤维";
+  prototypeId: ResourcePrototypeId;
+  displayName: "野生纤维" | "软木树" | "地表石" | "浅层铜矿";
+  taskKind: ResourceTaskKind;
+  skillId: ResourceSkillId;
+  requiredLevel: SafeUint;
+  locked: boolean;
+  requiredTool: Readonly<{ slot: ToolSlot; minimumTier: SafeUint }> | null;
+  mapColor: string;
   point: WorldPoint;
   state: "active" | "depleted" | "respawning";
   respawnRemainingMs: WorldTimeDecimal | null;
@@ -134,11 +165,9 @@ export type OfflineReport = Readonly<{
   toWorldTimeMs: WorldTimeDecimal;
   taskBefore: TaskIntent | null;
   taskAfter: TaskIntent | null;
-  xpGained: SafeUint;
-  levelsGained: SafeUint;
   revealedTiles: SafeUint;
-  fiberGained: SafeUint;
-  gatheringXpGained: SafeUint;
+  itemGains: readonly Readonly<{ itemId: MaterialItemId; displayName: "纤维" | "软木" | "石料" | "铜矿石"; quantity: SafeUint }>[];
+  skillXpGains: readonly Readonly<{ skillId: "exploration" | ResourceSkillId; displayName: "探索" | "采集" | "伐木" | "采矿"; xp: SafeUint }>[];
   stopReason: ActivityReason | null;
   committedRevision: SafeUint;
 }>;
@@ -149,13 +178,14 @@ export type GameplayReadModelV1 = Readonly<{
   gameplayEpoch: SafeUint;
   startup: "acquiring_lock" | "loading_save" | "new_world" | "processing_offline" | "ready" | "active_in_other_tab" | "incompatible_save" | "storage_blocked";
   generatorVersion: U32 | null;
-  player: Readonly<{ position: WorldPoint; hp: Readonly<{ current: 100; max: 100 }>; combatScope: "not_implemented_phase_2a" }> | null;
+  player: Readonly<{ position: WorldPoint; hp: Readonly<{ current: 100; max: 100 }>; combatScope: "not_implemented_phase_2b" }> | null;
   task: TaskIntent | null;
   activity: Activity;
   exploration: Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; observationRadiusTiles: SafeUint; revealedTileCount: SafeUint }> | null;
-  skills: Readonly<{ gathering: Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; skillSpeedBps: SafeUint }> }> | null;
-  inventory: Readonly<{ items: readonly Readonly<{ itemId: "fiber"; displayName: "纤维"; quantity: SafeUint }>[] }> | null;
-  knownTargetPrototypeIds: readonly "wild_fiber"[];
+  skills: Readonly<Record<ResourceSkillId, Readonly<{ level: SafeUint; totalXp: SafeUint; currentLevelXp: SafeUint; nextLevelXp: SafeUint | null; skillSpeedBps: SafeUint }>>> | null;
+  inventory: Readonly<{ items: readonly Readonly<{ itemId: MaterialItemId | ToolItemId; displayName: "纤维" | "软木" | "石料" | "铜矿石" | "破旧斧" | "破旧镐"; category: "material" | "equipment"; quantity: SafeUint }>[] }> | null;
+  equipment: Readonly<Record<ToolSlot, Readonly<{ itemId: ToolItemId; displayName: "破旧斧" | "破旧镐"; tier: SafeUint; speedBps: SafeUint }> | null>> | null;
+  knownTargetPrototypeIds: readonly ResourcePrototypeId[];
   map: Readonly<{ revealedChunks: readonly RevealedChunk[]; resourcePlacements: readonly ResourcePlacementSummary[]; selectedDestination: null }>;
   save: Readonly<{ state: "none" | "saving" | "saved" | "error" | "incompatible" | "active_in_other_tab"; revision: SafeUint; committedWallClockMs: SafeUint | null; localOnly: true; evictionWarning: boolean; lastError: ActivityReason | null }>;
   offlineReport: OfflineReport | null;
@@ -166,6 +196,10 @@ export type GameplayCommand =
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Explore"; mode: "continuous"; destination: null }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Explore"; mode: "destination"; destination: WorldPoint }>; wallClockMs: SafeUint }>
   | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Gather"; targetPrototypeId: "wild_fiber"; quantity: SafeUint | null }>; wallClockMs: SafeUint }>
+  | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Woodcut"; targetPrototypeId: "softwood_tree"; quantity: SafeUint | null }>; wallClockMs: SafeUint }>
+  | Readonly<{ type: "SetTask"; commandId: CommandId; task: Readonly<{ kind: "Mine"; targetPrototypeId: "surface_stone" | "shallow_copper_deposit"; quantity: SafeUint | null }>; wallClockMs: SafeUint }>
+  | Readonly<{ type: "EquipItem"; commandId: CommandId; itemId: ToolItemId; wallClockMs: SafeUint }>
+  | Readonly<{ type: "UnequipSlot"; commandId: CommandId; slot: ToolSlot; wallClockMs: SafeUint }>
   | Readonly<{ type: "CancelTask" | "ExportSave"; commandId: CommandId; wallClockMs: SafeUint }>
   | Readonly<{ type: "ImportSave"; commandId: CommandId; backupUtf8: ArrayBuffer; confirmed: true; wallClockMs: SafeUint }>
   | Readonly<{ type: "ResetSave"; commandId: CommandId; confirmed: true; wallClockMs: SafeUint }>;
@@ -194,7 +228,7 @@ const SIGNED_DECIMAL = /^(?:0|-?[1-9][0-9]*)$/;
 const REQUEST_ID = /^req:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
 const COMMAND_ID = /^cmd:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
 const TASK_ID = /^task:[0-9a-f]{16}:(?:0|[1-9][0-9]*)$/;
-const PLACEMENT_ID = /^place:wild-fiber:(?:ambient:(?:0|-?[1-9][0-9]*):(?:0|-?[1-9][0-9]*)|guarantee:(?:initial-observation|ring-a|ring-b))$/;
+const PLACEMENT_ID = /^place:(?:(?:wild-fiber|softwood-tree|surface-stone|shallow-copper-deposit):ambient:(?:0|-?[1-9][0-9]*):(?:0|-?[1-9][0-9]*)|wild-fiber:guarantee:(?:initial-observation|ring-a|ring-b)|(?:softwood-tree|surface-stone):guarantee:(?:initial-observation|ring-a)|shallow-copper-deposit:guarantee:boundary-a)$/;
 const ACTION_ID = /^action:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const TERRAIN_REQUEST_ID = /^terrain:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
 const CLAIM_ID = /^claim:(?:0|[1-9][0-9]*):(?:0|[1-9][0-9]*)$/;
@@ -206,6 +240,32 @@ const MIN_NAV = WORLD_POINT_NAV_MIN;
 const MAX_NAV = WORLD_POINT_NAV_MAX;
 const MIN_CHUNK = CHUNK_COORDINATE_MIN;
 const MAX_CHUNK = CHUNK_COORDINATE_MAX;
+const RESOURCE_PROTOTYPE_IDS = ["wild_fiber", "softwood_tree", "surface_stone", "shallow_copper_deposit"] as const;
+const MATERIAL_ITEM_IDS = ["fiber", "softwood", "stone", "copper_ore"] as const;
+const TOOL_ITEM_IDS = ["worn_axe", "worn_pickaxe"] as const;
+const RESOURCE_SKILL_IDS = ["gathering", "woodcutting", "mining"] as const;
+
+function isResourcePrototype(value: unknown): value is ResourcePrototypeId {
+  return typeof value === "string" && (RESOURCE_PROTOTYPE_IDS as readonly string[]).includes(value);
+}
+
+function isMaterialItem(value: unknown): value is MaterialItemId {
+  return typeof value === "string" && (MATERIAL_ITEM_IDS as readonly string[]).includes(value);
+}
+
+function isToolItem(value: unknown): value is ToolItemId {
+  return typeof value === "string" && (TOOL_ITEM_IDS as readonly string[]).includes(value);
+}
+
+function isResourceSkill(value: unknown): value is ResourceSkillId {
+  return typeof value === "string" && (RESOURCE_SKILL_IDS as readonly string[]).includes(value);
+}
+
+function taskPrototypeMapping(kind: unknown, prototypeId: unknown): boolean {
+  return (kind === "Gather" && prototypeId === "wild_fiber")
+    || (kind === "Woodcut" && prototypeId === "softwood_tree")
+    || (kind === "Mine" && (prototypeId === "surface_stone" || prototypeId === "shallow_copper_deposit"));
+}
 
 export function isSafeUint(value: unknown): value is SafeUint {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -313,14 +373,18 @@ export function isGameplayCommand(value: unknown): value is GameplayCommand {
     case "SetTask": {
       if (!hasExactKeys(command, ["type", "commandId", "task", "wallClockMs"]) || command.task === null || typeof command.task !== "object") return false;
       const task = command.task as Record<string, unknown>;
-      if (task.kind === "Gather") {
+      if (task.kind === "Gather" || task.kind === "Woodcut" || task.kind === "Mine") {
         return hasExactKeys(task, ["kind", "targetPrototypeId", "quantity"])
-          && task.targetPrototypeId === "wild_fiber"
+          && taskPrototypeMapping(task.kind, task.targetPrototypeId)
           && (task.quantity === null || (isSafeUint(task.quantity) && task.quantity > 0));
       }
       if (task.mode === "continuous") return hasExactKeys(task, ["kind", "mode", "destination"]) && task.kind === "Explore" && task.destination === null;
       return hasExactKeys(task, ["kind", "mode", "destination"]) && task.kind === "Explore" && task.mode === "destination" && isWorldPoint(task.destination);
     }
+    case "EquipItem":
+      return hasExactKeys(command, ["type", "commandId", "itemId", "wallClockMs"]) && isToolItem(command.itemId);
+    case "UnequipSlot":
+      return hasExactKeys(command, ["type", "commandId", "slot", "wallClockMs"]) && (command.slot === "axe" || command.slot === "pickaxe");
     case "CancelTask":
     case "ExportSave":
       return hasExactKeys(command, ["type", "commandId", "wallClockMs"]);
@@ -392,7 +456,12 @@ function isProtocolError(value: unknown): value is ProtocolError {
 function isCommandError(value: unknown): value is CommandError {
   if (!hasExactKeys(value, ["code", "params", "diagnosticId"]) || typeof value.code !== "string") return false;
   if (value.code === "command/id_conflict") return hasExactKeys(value.params, ["commandId"]) && isCommandId(value.params.commandId) && value.diagnosticId === null;
-  if (["command/invalid_seed", "command/unknown_target_prototype", "command/content_placement_failed", "save/not_found"].includes(value.code)) return value.params === null && value.diagnosticId === null;
+  if (["command/invalid_seed", "command/unknown_target_prototype", "command/content_placement_failed", "command/item_unavailable", "command/invalid_equipment", "save/not_found"].includes(value.code)) return value.params === null && value.diagnosticId === null;
+  if (value.code === "command/skill_level_too_low") {
+    return hasExactKeys(value.params, ["prototypeId", "skillId", "requiredLevel", "actualLevel"])
+      && isResourcePrototype(value.params.prototypeId) && isResourceSkill(value.params.skillId)
+      && isSafeUint(value.params.requiredLevel) && isSafeUint(value.params.actualLevel) && value.diagnosticId === null;
+  }
   if (value.code === "command/invalid_destination") return hasExactKeys(value.params, ["destination"]) && isWorldPoint(value.params.destination) && value.diagnosticId === null;
   if (value.code === "command/confirmation_required") return hasExactKeys(value.params, ["command"]) && (value.params.command === "ImportSave" || value.params.command === "ResetSave") && value.diagnosticId === null;
   if (value.code === "save/incompatible_version") return isVersionParams(value.params) && isDiagnosticId(value.diagnosticId);
@@ -416,6 +485,10 @@ export function isActivityReason(value: unknown): value is ActivityReason {
     case "DestinationUnreachable":
       return hasExactKeys(value.params, ["destination"]) && isWorldPoint(value.params.destination) && value.diagnosticId === null
         && value.allowedActions.length === 1 && value.allowedActions[0] === "set_task";
+    case "MissingTool":
+      return hasExactKeys(value.params, ["slot", "minimumTier"])
+        && (value.params.slot === "axe" || value.params.slot === "pickaxe") && isSafeUint(value.params.minimumTier)
+        && value.diagnosticId === null && JSON.stringify(value.allowedActions) === JSON.stringify(["equip_item", "set_task"]);
     case "storage_write_failed":
       return value.params === null && isDiagnosticId(value.diagnosticId) && JSON.stringify(value.allowedActions) === JSON.stringify(["open_system", "export", "reset", "retry"]);
     case "incompatible_save":
@@ -447,21 +520,38 @@ export function isGatherTask(value: unknown): value is GatherTask {
     && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
 }
 
+export function isWoodcutTask(value: unknown): value is WoodcutTask {
+  return hasExactKeys(value, ["taskId", "kind", "targetPrototypeId", "quantity", "completedQuantity", "createdWorldTimeMs"])
+    && isTaskId(value.taskId) && value.kind === "Woodcut" && value.targetPrototypeId === "softwood_tree"
+    && (value.quantity === null || (isSafeUint(value.quantity) && value.quantity > 0))
+    && isSafeUint(value.completedQuantity) && (value.quantity === null || value.completedQuantity <= value.quantity)
+    && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
+}
+
+export function isMineTask(value: unknown): value is MineTask {
+  return hasExactKeys(value, ["taskId", "kind", "targetPrototypeId", "quantity", "completedQuantity", "createdWorldTimeMs"])
+    && isTaskId(value.taskId) && value.kind === "Mine" && (value.targetPrototypeId === "surface_stone" || value.targetPrototypeId === "shallow_copper_deposit")
+    && (value.quantity === null || (isSafeUint(value.quantity) && value.quantity > 0))
+    && isSafeUint(value.completedQuantity) && (value.quantity === null || value.completedQuantity <= value.quantity)
+    && isCanonicalUnsignedDecimal(value.createdWorldTimeMs);
+}
+
 export function isTaskIntent(value: unknown): value is TaskIntent {
-  return isExploreTask(value) || isGatherTask(value);
+  return isExploreTask(value) || isGatherTask(value) || isWoodcutTask(value) || isMineTask(value);
 }
 
 function isResourceActionSummary(value: unknown): value is ResourceActionSummary {
-  return hasExactKeys(value, ["actionId", "placementId", "prototypeId", "durationMs", "remainingMs", "skillSpeedBps"])
-    && isActionId(value.actionId) && isPlacementId(value.placementId) && value.prototypeId === "wild_fiber"
-    && isCanonicalUnsignedDecimal(value.durationMs) && isCanonicalUnsignedDecimal(value.remainingMs)
-    && BigInt(value.remainingMs) <= BigInt(value.durationMs) && isSafeUint(value.skillSpeedBps) && value.skillSpeedBps <= 2_500;
+  return hasExactKeys(value, ["actionId", "placementId", "prototypeId", "baseDurationMs", "durationMs", "remainingMs", "skillSpeedBps", "toolSpeedBps", "totalSpeedBps"])
+    && isActionId(value.actionId) && isPlacementId(value.placementId) && isResourcePrototype(value.prototypeId)
+    && isCanonicalUnsignedDecimal(value.baseDurationMs) && isCanonicalUnsignedDecimal(value.durationMs) && isCanonicalUnsignedDecimal(value.remainingMs)
+    && BigInt(value.remainingMs) <= BigInt(value.durationMs) && isSafeUint(value.skillSpeedBps) && value.skillSpeedBps <= 2_500
+    && value.toolSpeedBps === 0 && isSafeUint(value.totalSpeedBps) && value.totalSpeedBps === value.skillSpeedBps;
 }
 
 function isActivity(value: unknown): value is Activity {
   if (!hasExactKeys(value, ["state", "phase", "route", "routePurpose", "routeIndex", "etaMs", "progressPermille", "targetPlacementId", "action", "reason"]) || !Array.isArray(value.route)) return false;
   if (!["idle", "planning", "moving", "acting", "waiting", "paused"].includes(value.state as string)
-    || !["idle", "exploring", "acquiring_target", "moving_to_target", "gathering", "auto_exploring", "waiting", "paused"].includes(value.phase as string)
+    || !["idle", "exploring", "acquiring_target", "moving_to_target", "resource_action", "auto_exploring", "waiting", "paused"].includes(value.phase as string)
     || value.route.length > 65_536 || !value.route.every(isWorldPoint)) return false;
   if (!(value.routePurpose === null || ["explore", "task_target", "auto_explore"].includes(value.routePurpose as string))) return false;
   if (!isSafeUint(value.routeIndex) || (value.route.length === 0 ? value.routeIndex !== 0 : value.routeIndex >= value.route.length)) return false;
@@ -474,8 +564,19 @@ function isActivity(value: unknown): value is Activity {
 }
 
 function isResourcePlacementSummary(value: unknown): value is ResourcePlacementSummary {
-  return hasExactKeys(value, ["placementId", "prototypeId", "displayName", "point", "state", "respawnRemainingMs", "reachable"])
-    && isPlacementId(value.placementId) && value.prototypeId === "wild_fiber" && value.displayName === "野生纤维"
+  const displayNames: Record<ResourcePrototypeId, string> = { wild_fiber: "野生纤维", softwood_tree: "软木树", surface_stone: "地表石", shallow_copper_deposit: "浅层铜矿" };
+  const taskKinds: Record<ResourcePrototypeId, ResourceTaskKind> = { wild_fiber: "Gather", softwood_tree: "Woodcut", surface_stone: "Mine", shallow_copper_deposit: "Mine" };
+  const skillIds: Record<ResourcePrototypeId, ResourceSkillId> = { wild_fiber: "gathering", softwood_tree: "woodcutting", surface_stone: "mining", shallow_copper_deposit: "mining" };
+  const requiredLevels: Record<ResourcePrototypeId, number> = { wild_fiber: 1, softwood_tree: 1, surface_stone: 1, shallow_copper_deposit: 5 };
+  const toolSlots: Record<ResourcePrototypeId, ToolSlot | null> = { wild_fiber: null, softwood_tree: "axe", surface_stone: "pickaxe", shallow_copper_deposit: "pickaxe" };
+  const mapColors: Record<ResourcePrototypeId, string> = { wild_fiber: "#85d59a", softwood_tree: "#6fbd78", surface_stone: "#b8b7ad", shallow_copper_deposit: "#cf8658" };
+  return hasExactKeys(value, ["placementId", "prototypeId", "displayName", "taskKind", "skillId", "requiredLevel", "locked", "requiredTool", "mapColor", "point", "state", "respawnRemainingMs", "reachable"])
+    && isPlacementId(value.placementId) && isResourcePrototype(value.prototypeId) && value.displayName === displayNames[value.prototypeId]
+    && value.taskKind === taskKinds[value.prototypeId] && value.skillId === skillIds[value.prototypeId]
+    && value.requiredLevel === requiredLevels[value.prototypeId] && typeof value.locked === "boolean"
+    && (toolSlots[value.prototypeId] === null ? value.requiredTool === null : hasExactKeys(value.requiredTool, ["slot", "minimumTier"])
+      && value.requiredTool.slot === toolSlots[value.prototypeId] && value.requiredTool.minimumTier === 0)
+    && value.mapColor === mapColors[value.prototypeId]
     && isWorldPoint(value.point) && ["active", "depleted", "respawning"].includes(value.state as string)
     && (value.respawnRemainingMs === null || isCanonicalUnsignedDecimal(value.respawnRemainingMs))
     && ["reachable", "unreachable", "unknown"].includes(value.reachable as string);
@@ -496,38 +597,60 @@ function isRevealedChunk(value: unknown): value is RevealedChunk {
 }
 
 export function isOfflineReport(value: unknown): value is OfflineReport {
-  return hasExactKeys(value, ["claimId", "rawElapsedMs", "clockSkew", "creditedDurationMs", "discardedDurationMs", "fromWorldTimeMs", "toWorldTimeMs", "taskBefore", "taskAfter", "xpGained", "levelsGained", "revealedTiles", "fiberGained", "gatheringXpGained", "stopReason", "committedRevision"])
+  return hasExactKeys(value, ["claimId", "rawElapsedMs", "clockSkew", "creditedDurationMs", "discardedDurationMs", "fromWorldTimeMs", "toWorldTimeMs", "taskBefore", "taskAfter", "revealedTiles", "itemGains", "skillXpGains", "stopReason", "committedRevision"])
     && isClaimId(value.claimId) && typeof value.rawElapsedMs === "number" && Number.isSafeInteger(value.rawElapsedMs)
     && (value.clockSkew === "none" || value.clockSkew === "backward") && isCanonicalUnsignedDecimal(value.creditedDurationMs)
     && isCanonicalUnsignedDecimal(value.discardedDurationMs) && isCanonicalUnsignedDecimal(value.fromWorldTimeMs)
     && isCanonicalUnsignedDecimal(value.toWorldTimeMs) && (value.taskBefore === null || isTaskIntent(value.taskBefore))
-    && (value.taskAfter === null || isTaskIntent(value.taskAfter)) && isSafeUint(value.xpGained) && isSafeUint(value.levelsGained)
-    && isSafeUint(value.revealedTiles) && isSafeUint(value.fiberGained) && isSafeUint(value.gatheringXpGained)
+    && (value.taskAfter === null || isTaskIntent(value.taskAfter)) && isSafeUint(value.revealedTiles)
+    && Array.isArray(value.itemGains) && value.itemGains.every((gain: unknown) => hasExactKeys(gain, ["itemId", "displayName", "quantity"])
+      && isMaterialItem(gain.itemId) && typeof gain.displayName === "string" && isSafeUint(gain.quantity) && gain.quantity > 0)
+    && Array.isArray(value.skillXpGains) && value.skillXpGains.every((gain: unknown) => hasExactKeys(gain, ["skillId", "displayName", "xp"])
+      && (gain.skillId === "exploration" || isResourceSkill(gain.skillId)) && typeof gain.displayName === "string" && isSafeUint(gain.xp) && gain.xp > 0)
     && (value.stopReason === null || isActivityReason(value.stopReason)) && isSafeUint(value.committedRevision)
     && (value.clockSkew !== "backward" || (value.rawElapsedMs < 0 && value.creditedDurationMs === "0" && value.discardedDurationMs === "0" && value.toWorldTimeMs === value.fromWorldTimeMs));
 }
 
 export function isGameplayReadModel(value: unknown): value is GameplayReadModelV1 {
-  if (!hasExactKeys(value, ["protocolVersion", "readModelRevision", "gameplayEpoch", "startup", "generatorVersion", "player", "task", "activity", "exploration", "skills", "inventory", "knownTargetPrototypeIds", "map", "save", "offlineReport"])) return false;
+  if (!hasExactKeys(value, ["protocolVersion", "readModelRevision", "gameplayEpoch", "startup", "generatorVersion", "player", "task", "activity", "exploration", "skills", "inventory", "equipment", "knownTargetPrototypeIds", "map", "save", "offlineReport"])) return false;
   if (value.protocolVersion !== 1 || !isSafeUint(value.readModelRevision) || !isSafeUint(value.gameplayEpoch)
     || !["acquiring_lock", "loading_save", "new_world", "processing_offline", "ready", "active_in_other_tab", "incompatible_save", "storage_blocked"].includes(value.startup as string)
     || !(value.generatorVersion === null || isU32(value.generatorVersion))) return false;
   if (value.player !== null && !(hasExactKeys(value.player, ["position", "hp", "combatScope"]) && isWorldPoint(value.player.position)
     && hasExactKeys(value.player.hp, ["current", "max"]) && value.player.hp.current === 100 && value.player.hp.max === 100
-    && value.player.combatScope === "not_implemented_phase_2a")) return false;
+    && value.player.combatScope === "not_implemented_phase_2b")) return false;
   if (!(value.task === null || isTaskIntent(value.task)) || !isActivity(value.activity)) return false;
   if (value.exploration !== null && !(hasExactKeys(value.exploration, ["level", "totalXp", "currentLevelXp", "nextLevelXp", "observationRadiusTiles", "revealedTileCount"])
     && isSafeUint(value.exploration.level) && isSafeUint(value.exploration.totalXp) && isSafeUint(value.exploration.currentLevelXp)
     && (value.exploration.nextLevelXp === null || isSafeUint(value.exploration.nextLevelXp)) && isSafeUint(value.exploration.observationRadiusTiles)
     && isSafeUint(value.exploration.revealedTileCount))) return false;
-  if (value.skills !== null && !(hasExactKeys(value.skills, ["gathering"]) && hasExactKeys(value.skills.gathering, ["level", "totalXp", "currentLevelXp", "nextLevelXp", "skillSpeedBps"])
-    && isSafeUint(value.skills.gathering.level) && isSafeUint(value.skills.gathering.totalXp) && isSafeUint(value.skills.gathering.currentLevelXp)
-    && (value.skills.gathering.nextLevelXp === null || isSafeUint(value.skills.gathering.nextLevelXp))
-    && isSafeUint(value.skills.gathering.skillSpeedBps) && value.skills.gathering.skillSpeedBps <= 2_500)) return false;
+  if (value.skills !== null) {
+    if (!hasExactKeys(value.skills, ["gathering", "woodcutting", "mining"])) return false;
+    for (const skillId of RESOURCE_SKILL_IDS) {
+      const skill = value.skills[skillId];
+      if (!hasExactKeys(skill, ["level", "totalXp", "currentLevelXp", "nextLevelXp", "skillSpeedBps"])
+        || !isSafeUint(skill.level) || !isSafeUint(skill.totalXp) || !isSafeUint(skill.currentLevelXp)
+        || !(skill.nextLevelXp === null || isSafeUint(skill.nextLevelXp)) || !isSafeUint(skill.skillSpeedBps) || skill.skillSpeedBps > 2_500) return false;
+    }
+  }
   if (value.inventory !== null && !(hasExactKeys(value.inventory, ["items"]) && Array.isArray(value.inventory.items)
-    && value.inventory.items.length <= 1 && value.inventory.items.every((item: unknown) => hasExactKeys(item, ["itemId", "displayName", "quantity"])
-      && item.itemId === "fiber" && item.displayName === "纤维" && isSafeUint(item.quantity) && item.quantity > 0))) return false;
-  if (!Array.isArray(value.knownTargetPrototypeIds) || value.knownTargetPrototypeIds.some((id: unknown) => id !== "wild_fiber")
+    && value.inventory.items.length <= 6 && value.inventory.items.every((item: unknown) => hasExactKeys(item, ["itemId", "displayName", "category", "quantity"])
+      && (isMaterialItem(item.itemId) || isToolItem(item.itemId)) && (item.category === "material" || item.category === "equipment")
+      && (isMaterialItem(item.itemId) ? item.category === "material" : item.category === "equipment")
+      && typeof item.displayName === "string" && isSafeUint(item.quantity) && item.quantity > 0)
+    && new Set(value.inventory.items.map((item) => item.itemId)).size === value.inventory.items.length)) return false;
+  if (value.equipment !== null) {
+    if (!hasExactKeys(value.equipment, ["axe", "pickaxe"])) return false;
+    const equipment = value.equipment;
+    for (const slot of ["axe", "pickaxe"] as const) {
+      const equipped = equipment[slot];
+      if (equipped !== null && !(hasExactKeys(equipped, ["itemId", "displayName", "tier", "speedBps"])
+        && equipped.itemId === (slot === "axe" ? "worn_axe" : "worn_pickaxe")
+        && equipped.displayName === (slot === "axe" ? "破旧斧" : "破旧镐")
+        && equipped.tier === 0 && equipped.speedBps === 0)) return false;
+    }
+  }
+  if (!Array.isArray(value.knownTargetPrototypeIds) || value.knownTargetPrototypeIds.some((id: unknown) => !isResourcePrototype(id))
     || new Set(value.knownTargetPrototypeIds).size !== value.knownTargetPrototypeIds.length) return false;
   if (!(hasExactKeys(value.map, ["revealedChunks", "resourcePlacements", "selectedDestination"]) && Array.isArray(value.map.revealedChunks)
     && value.map.revealedChunks.every(isRevealedChunk) && Array.isArray(value.map.resourcePlacements)

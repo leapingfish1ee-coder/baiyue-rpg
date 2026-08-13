@@ -58,23 +58,35 @@
             <div class="section-heading"><strong id="task-heading">任务</strong><span id="gather-progress">未设置</span></div>
             <div id="gather-controls" hidden>
               <label for="gather-target">目标</label>
-              <select id="gather-target"><option value="wild_fiber">野生纤维</option></select>
+              <select id="gather-target"></select>
               <label for="gather-quantity">数量</label>
               <input id="gather-quantity" inputmode="numeric" value="10" />
               <div class="compact-actions">
-                <button id="gather-finite" class="primary" type="button">采集 ×10</button>
-                <button id="gather-continuous" type="button">持续采集</button>
+                <button id="gather-finite" class="primary" type="button">执行 ×10</button>
+                <button id="gather-continuous" type="button">持续执行</button>
               </div>
+              <p id="task-warning" class="task-warning" hidden></p>
             </div>
-            <p id="gather-unknown" class="empty-copy">尚未发现可采集资源。</p>
+            <p id="gather-unknown" class="empty-copy">尚未发现资源。</p>
           </section>
           <section aria-labelledby="skills-heading">
-            <div class="section-heading"><strong id="skills-heading">技能</strong><span id="gathering-speed">0 bps</span></div>
-            <div class="compact-stat"><span id="gathering-level">采集 Lv.1</span><span id="gathering-xp">0 / 100 XP</span></div>
+            <div class="section-heading"><strong id="skills-heading">技能</strong><span>首轮平衡基线</span></div>
+            <div class="compact-stat"><span id="gathering-level">采集 Lv.1</span><span id="gathering-xp">0 / 100 XP</span><small id="gathering-speed">0 bps</small></div>
+            <div class="compact-stat"><span id="woodcutting-level">伐木 Lv.1</span><span id="woodcutting-xp">0 / 100 XP</span><small id="woodcutting-speed">0 bps</small></div>
+            <div class="compact-stat"><span id="mining-level">采矿 Lv.1</span><span id="mining-xp">0 / 100 XP</span><small id="mining-speed">0 bps</small></div>
           </section>
           <section aria-labelledby="inventory-heading">
             <div class="section-heading"><strong id="inventory-heading">库存</strong><span>无容量限制</span></div>
-            <div class="compact-stat"><span>纤维</span><strong id="fiber-quantity">0</strong></div>
+            <small class="group-label">材料</small>
+            <div id="material-list" class="inventory-list"><span class="empty-copy">暂无材料</span></div>
+            <small class="group-label">工具</small>
+            <div id="tool-inventory-list" class="inventory-list"><span class="empty-copy">工具均已装备</span></div>
+            <span id="fiber-quantity" hidden>0</span>
+          </section>
+          <section aria-labelledby="equipment-heading">
+            <div class="section-heading"><strong id="equipment-heading">装备</strong><span>不自动装备</span></div>
+            <div class="equipment-row"><span>斧</span><strong id="axe-equipped">—</strong><button id="axe-toggle" type="button">卸下</button></div>
+            <div class="equipment-row"><span>镐</span><strong id="pickaxe-equipped">—</strong><button id="pickaxe-toggle" type="button">卸下</button></div>
           </section>
           <section aria-labelledby="resources-heading">
             <div class="section-heading"><strong id="resources-heading">已知资源</strong><span id="resource-count">0</span></div>

@@ -1,17 +1,25 @@
 import { BASE_TERRAIN_ID, RUNTIME_CHUNK_SIZE, compareChunkKeysNumeric } from "../world-contract.ts";
 import { CampAnchorStepper } from "./anchor.ts";
 import {
-  FIBER_ITEM_ID,
   GuaranteePlacementStepper,
-  WILD_FIBER_PROTOTYPE_ID,
-  WILD_FIBER_RESPAWN_DURATION_MS,
-  WILD_FIBER_XP,
-  ambientPlacementCandidate,
-  authoritativeGatherDuration,
+  RESOURCE_DEFINITIONS,
+  RESOURCE_PROTOTYPE_ORDER,
+  TOOL_DEFINITIONS,
+  ambientPlacementCandidates,
+  authoritativeResourceDuration,
   contentCellForTile,
+  resourceDefinition,
+  resolveAmbientPlacementConflicts,
+  taskKindMatchesPrototype,
+  type MaterialItemId,
+  type ResourcePrototypeId,
+  type ResourceSkillId,
+  type ResourceTaskKind,
+  type ToolItemId,
+  type ToolSlot,
   type ResourcePlacementDefinition,
 } from "./content.ts";
-import type { ActivityReason, GatherTask, GameplayReadModelV1, OfflineReport, SeedDecimal, TaskId, TaskIntent, WorldPoint } from "./contracts.ts";
+import type { ActivityReason, GameplayReadModelV1, OfflineReport, ResourceTask, SeedDecimal, TaskId, TaskIntent, WorldPoint } from "./contracts.ts";
 import { base64ToFogBits, fogBitsToBase64, isRevealed, revealObservation, revealedTiles, type FogMap } from "./fog.ts";
 import { floorDiv, levelFromTotalXp, observationRadius, xpAtLevelStart, xpForNextLevel } from "./math.ts";
 import { positionAtWeightedCost, rational, routeEventTimeMs } from "./motion.ts";
@@ -21,6 +29,8 @@ export type EngineTaskInput = Readonly<
   | { kind: "Explore"; mode: "continuous"; destination: null }
   | { kind: "Explore"; mode: "destination"; destination: WorldPoint }
   | { kind: "Gather"; targetPrototypeId: "wild_fiber"; quantity: number | null }
+  | { kind: "Woodcut"; targetPrototypeId: "softwood_tree"; quantity: number | null }
+  | { kind: "Mine"; targetPrototypeId: "surface_stone" | "shallow_copper_deposit"; quantity: number | null }
 >;
 
 export type EngineTerrainEffect = Readonly<{
@@ -40,7 +50,13 @@ export type EngineSnapshot = Readonly<{
   position: WorldPoint | null;
   totalXp: number;
   gatheringXp: number;
+  woodcuttingXp: number;
+  miningXp: number;
   fiber: number;
+  softwood: number;
+  stone: number;
+  copperOre: number;
+  equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   revealedTileCount: number;
   revealedChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string }>[];
   task: TaskIntent | null;
@@ -56,7 +72,15 @@ export type EnginePersistedState = Readonly<{
   campAnchor: WorldPoint;
   totalXp: number;
   gatheringXp: number;
+  woodcuttingXp: number;
+  miningXp: number;
   fiber: number;
+  softwood: number;
+  stone: number;
+  copperOre: number;
+  wornAxe: number;
+  wornPickaxe: number;
+  equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: TaskIntent | null;
   execution: Readonly<{
     state: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
@@ -76,10 +100,13 @@ export type EnginePersistedState = Readonly<{
     action: Readonly<{
       actionId: string;
       placementId: string;
+      prototypeId: ResourcePrototypeId;
       startWorldTimeMs: string;
       endWorldTimeMs: string;
       durationMs: string;
       skillSpeedBps: number;
+      toolSpeedBps: number;
+      totalSpeedBps: number;
     }> | null;
     waitingReason: ActivityReason | null;
   }>;
@@ -98,7 +125,15 @@ export type EngineRestoreState = Readonly<{
   campAnchor: WorldPoint;
   totalXp: number;
   gatheringXp: number;
+  woodcuttingXp: number;
+  miningXp: number;
   fiber: number;
+  softwood: number;
+  stone: number;
+  copperOre: number;
+  wornAxe: number;
+  wornPickaxe: number;
+  equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: TaskIntent | null;
   executionState: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused";
   routePurpose: "explore" | "task_target" | "auto_explore" | null;
@@ -106,10 +141,13 @@ export type EngineRestoreState = Readonly<{
   action: Readonly<{
     actionId: string;
     placementId: string;
+    prototypeId: ResourcePrototypeId;
     startWorldTimeMs: string;
     endWorldTimeMs: string;
     durationMs: string;
     skillSpeedBps: number;
+    toolSpeedBps: number;
+    totalSpeedBps: number;
   }> | null;
   waitingReason: ActivityReason | null;
   worldChunks: readonly Readonly<{ chunkKey: string; revealedBase64: string; knownPlacements: readonly KnownResourcePlacement[] }>[];
@@ -126,7 +164,7 @@ type PendingTerrain = Readonly<{ source: "anchor" | "navigation" | "content"; ef
 
 export type KnownResourcePlacement = Readonly<{
   placementId: string;
-  prototypeId: "wild_fiber";
+  prototypeId: ResourcePrototypeId;
   source: "ambient" | "guarantee";
   tileX: string;
   tileY: string;
@@ -140,13 +178,16 @@ export type KnownResourcePlacement = Readonly<{
 type ResourceAction = {
   actionId: string;
   placementId: string;
+  prototypeId: ResourcePrototypeId;
   startWorldTimeMs: bigint;
   endWorldTimeMs: bigint;
   durationMs: bigint;
   skillSpeedBps: number;
+  toolSpeedBps: number;
+  totalSpeedBps: number;
 };
 
-type GatherPlanning = {
+type ResourcePlanning = {
   candidates: readonly KnownResourcePlacement[];
   index: number;
   planner: PlannerStepper | null;
@@ -177,6 +218,34 @@ export class UnknownTargetPrototypeError extends Error {
   readonly code = "command/unknown_target_prototype" as const;
 }
 
+export class SkillLevelTooLowError extends Error {
+  readonly code = "command/skill_level_too_low" as const;
+  readonly prototypeId: ResourcePrototypeId;
+  readonly skillId: ResourceSkillId;
+  readonly requiredLevel: number;
+  readonly actualLevel: number;
+  constructor(
+    prototypeId: ResourcePrototypeId,
+    skillId: ResourceSkillId,
+    requiredLevel: number,
+    actualLevel: number,
+  ) {
+    super(`${skillId} ${actualLevel} does not meet level ${requiredLevel} for ${prototypeId}`);
+    this.prototypeId = prototypeId;
+    this.skillId = skillId;
+    this.requiredLevel = requiredLevel;
+    this.actualLevel = actualLevel;
+  }
+}
+
+export class ItemUnavailableError extends Error {
+  readonly code = "command/item_unavailable" as const;
+}
+
+export class InvalidEquipmentError extends Error {
+  readonly code = "command/invalid_equipment" as const;
+}
+
 export class QuantityOverflowError extends Error {
   readonly code = "integrity/quantity_overflow" as const;
 }
@@ -187,6 +256,9 @@ function taskIdFromCommandId(commandId: string): TaskId {
 }
 
 function clonePoint(point: WorldPoint): WorldPoint { return { x: point.x, y: point.y }; }
+function isResourceTask(task: TaskIntent | null): task is ResourceTask {
+  return task !== null && (task.kind === "Gather" || task.kind === "Woodcut" || task.kind === "Mine");
+}
 
 export class GameplayEngine {
   private readonly generatorVersion: number;
@@ -198,7 +270,15 @@ export class GameplayEngine {
   private campAnchor: WorldPoint | null = null;
   private totalXp = 0;
   private gatheringXp = 0;
+  private woodcuttingXp = 0;
+  private miningXp = 0;
   private fiber = 0;
+  private softwood = 0;
+  private stone = 0;
+  private copperOre = 0;
+  private wornAxe = 0;
+  private wornPickaxe = 0;
+  private equipment: Record<ToolSlot, ToolItemId | null> = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
   private revealedTileCount = 0;
   private task: TaskIntent | null = null;
   private activityState: "idle" | "planning" | "moving" | "acting" | "waiting" | "paused" = "idle";
@@ -216,7 +296,7 @@ export class GameplayEngine {
   private gameplayEpoch = 0;
   private plannerGeneration = 0;
   private planner: PlannerStepper | null = null;
-  private gatherPlanning: GatherPlanning | null = null;
+  private resourcePlanning: ResourcePlanning | null = null;
   private anchor: CampAnchorStepper | null = null;
   private guaranteeStepper: GuaranteePlacementStepper | null = null;
   private guaranteePlacements: readonly ResourcePlacementDefinition[] = [];
@@ -253,7 +333,13 @@ export class GameplayEngine {
       position: this.position === null ? null : clonePoint(this.position),
       totalXp: this.totalXp,
       gatheringXp: this.gatheringXp,
+      woodcuttingXp: this.woodcuttingXp,
+      miningXp: this.miningXp,
       fiber: this.fiber,
+      softwood: this.softwood,
+      stone: this.stone,
+      copperOre: this.copperOre,
+      equipment: { ...this.equipment },
       revealedTileCount: this.revealedTileCount,
       revealedChunks: [...this.fog.entries()]
         .sort(([left], [right]) => compareChunkKeysNumeric(left, right))
@@ -275,7 +361,15 @@ export class GameplayEngine {
       campAnchor: clonePoint(this.campAnchor!),
       totalXp: this.totalXp,
       gatheringXp: this.gatheringXp,
+      woodcuttingXp: this.woodcuttingXp,
+      miningXp: this.miningXp,
       fiber: this.fiber,
+      softwood: this.softwood,
+      stone: this.stone,
+      copperOre: this.copperOre,
+      wornAxe: this.wornAxe,
+      wornPickaxe: this.wornPickaxe,
+      equipment: { ...this.equipment },
       task: this.task === null ? null : structuredClone(this.task),
       execution: {
         state: this.activityState,
@@ -296,10 +390,13 @@ export class GameplayEngine {
         action: this.action === null ? null : {
           actionId: this.action.actionId,
           placementId: this.action.placementId,
+          prototypeId: this.action.prototypeId,
           startWorldTimeMs: this.action.startWorldTimeMs.toString(),
           endWorldTimeMs: this.action.endWorldTimeMs.toString(),
           durationMs: this.action.durationMs.toString(),
           skillSpeedBps: this.action.skillSpeedBps,
+          toolSpeedBps: this.action.toolSpeedBps,
+          totalSpeedBps: this.action.totalSpeedBps,
         },
         waitingReason: this.reason,
       },
@@ -317,7 +414,15 @@ export class GameplayEngine {
     this.campAnchor = clonePoint(state.campAnchor);
     this.totalXp = state.totalXp;
     this.gatheringXp = state.gatheringXp;
+    this.woodcuttingXp = state.woodcuttingXp;
+    this.miningXp = state.miningXp;
     this.fiber = state.fiber;
+    this.softwood = state.softwood;
+    this.stone = state.stone;
+    this.copperOre = state.copperOre;
+    this.wornAxe = state.wornAxe;
+    this.wornPickaxe = state.wornPickaxe;
+    this.equipment = { ...state.equipment };
     this.task = state.task === null ? null : structuredClone(state.task);
     this.anchor = null;
     this.pendingTerrain = null;
@@ -343,10 +448,13 @@ export class GameplayEngine {
     this.action = state.action === null ? null : {
       actionId: state.action.actionId,
       placementId: state.action.placementId,
+      prototypeId: state.action.prototypeId,
       startWorldTimeMs: BigInt(state.action.startWorldTimeMs),
       endWorldTimeMs: BigInt(state.action.endWorldTimeMs),
       durationMs: BigInt(state.action.durationMs),
       skillSpeedBps: state.action.skillSpeedBps,
+      toolSpeedBps: state.action.toolSpeedBps,
+      totalSpeedBps: state.action.totalSpeedBps,
     };
     this.reason = null;
     if (this.task === null) {
@@ -381,7 +489,15 @@ export class GameplayEngine {
     this.campAnchor = null;
     this.totalXp = 0;
     this.gatheringXp = 0;
+    this.woodcuttingXp = 0;
+    this.miningXp = 0;
     this.fiber = 0;
+    this.softwood = 0;
+    this.stone = 0;
+    this.copperOre = 0;
+    this.wornAxe = 0;
+    this.wornPickaxe = 0;
+    this.equipment = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
     this.task = null;
     this.knownPlacements.clear();
     this.unreachablePlacementIds.clear();
@@ -409,7 +525,15 @@ export class GameplayEngine {
     this.campAnchor = null;
     this.totalXp = 0;
     this.gatheringXp = 0;
+    this.woodcuttingXp = 0;
+    this.miningXp = 0;
     this.fiber = 0;
+    this.softwood = 0;
+    this.stone = 0;
+    this.copperOre = 0;
+    this.wornAxe = 0;
+    this.wornPickaxe = 0;
+    this.equipment = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
     this.revealedTileCount = 0;
     this.task = null;
     this.anchor = null;
@@ -435,14 +559,29 @@ export class GameplayEngine {
 
   setTask(commandId: string, taskInput: EngineTaskInput): void {
     this.requireWorld();
+    if (taskInput.kind === "Gather" || taskInput.kind === "Woodcut" || taskInput.kind === "Mine") {
+      const definition = resourceDefinition(taskInput.targetPrototypeId);
+      if (!taskKindMatchesPrototype(taskInput.kind, taskInput.targetPrototypeId)) {
+        throw new UnknownTargetPrototypeError(`${taskInput.kind} cannot target ${taskInput.targetPrototypeId}`);
+      }
+      if (!this.hasKnownPrototype(taskInput.targetPrototypeId)) {
+        throw new UnknownTargetPrototypeError(`${taskInput.targetPrototypeId} is not known in this world`);
+      }
+      const actualLevel = levelFromTotalXp(this.skillXpFor(definition.skillId));
+      if (actualLevel < definition.requiredLevel) {
+        throw new SkillLevelTooLowError(definition.prototypeId, definition.skillId, definition.requiredLevel, actualLevel);
+      }
+    }
     this.plannerGeneration += 1;
     this.materializeCurrentPosition();
-    if (taskInput.kind === "Gather") {
-      if (!this.hasKnownWildFiber()) throw new UnknownTargetPrototypeError("wild_fiber is not known in this world");
-      this.task = {
-        taskId: taskIdFromCommandId(commandId), kind: "Gather", targetPrototypeId: WILD_FIBER_PROTOTYPE_ID,
-        quantity: taskInput.quantity, completedQuantity: 0, createdWorldTimeMs: this.worldTimeMs.toString(),
+    if (taskInput.kind === "Gather" || taskInput.kind === "Woodcut" || taskInput.kind === "Mine") {
+      const common = {
+        taskId: taskIdFromCommandId(commandId), quantity: taskInput.quantity, completedQuantity: 0,
+        createdWorldTimeMs: this.worldTimeMs.toString(),
       };
+      if (taskInput.kind === "Gather") this.task = { ...common, kind: "Gather", targetPrototypeId: "wild_fiber" };
+      else if (taskInput.kind === "Woodcut") this.task = { ...common, kind: "Woodcut", targetPrototypeId: "softwood_tree" };
+      else this.task = { ...common, kind: "Mine", targetPrototypeId: taskInput.targetPrototypeId };
     } else {
       this.task = {
         taskId: taskIdFromCommandId(commandId), kind: "Explore", mode: taskInput.mode,
@@ -456,6 +595,34 @@ export class GameplayEngine {
     this.clearRoute();
     this.beginPlanning();
     this.bumpRevision();
+  }
+
+  equipItem(itemId: ToolItemId): void {
+    this.requireWorld();
+    const tool = TOOL_DEFINITIONS[itemId];
+    if (this.equipment[tool.slot] === itemId) return;
+    const inventoryQuantity = this.toolInventoryQuantity(itemId);
+    if (inventoryQuantity < 1) throw new ItemUnavailableError(`${itemId} is not in inventory`);
+    const previous = this.equipment[tool.slot];
+    const previousQuantity = previous === null ? 0 : this.toolInventoryQuantity(previous);
+    if (previousQuantity + (previous === null ? 0 : 1) > Number.MAX_SAFE_INTEGER) {
+      throw new QuantityOverflowError("equipment swap exceeds safe integer storage");
+    }
+    this.setToolInventoryQuantity(itemId, inventoryQuantity - 1);
+    if (previous !== null) this.setToolInventoryQuantity(previous, previousQuantity + 1);
+    this.equipment = { ...this.equipment, [tool.slot]: itemId };
+    this.restartExecutionAfterEquipmentChange();
+  }
+
+  unequipSlot(slot: ToolSlot): void {
+    this.requireWorld();
+    const itemId = this.equipment[slot];
+    if (itemId === null) return;
+    const nextQuantity = this.toolInventoryQuantity(itemId) + 1;
+    if (!Number.isSafeInteger(nextQuantity)) throw new QuantityOverflowError("unequip exceeds safe integer storage");
+    this.setToolInventoryQuantity(itemId, nextQuantity);
+    this.equipment = { ...this.equipment, [slot]: null };
+    this.restartExecutionAfterEquipmentChange();
   }
 
   cancelTask(): void {
@@ -495,7 +662,15 @@ export class GameplayEngine {
       this.campAnchor = clonePoint(result.anchor.point);
       this.totalXp = 0;
       this.gatheringXp = 0;
+      this.woodcuttingXp = 0;
+      this.miningXp = 0;
       this.fiber = 0;
+      this.softwood = 0;
+      this.stone = 0;
+      this.copperOre = 0;
+      this.wornAxe = 0;
+      this.wornPickaxe = 0;
+      this.equipment = { axe: "worn_axe", pickaxe: "worn_pickaxe" };
       this.revealedTileCount = 0;
       this.task = null;
       this.activityState = "idle";
@@ -524,7 +699,7 @@ export class GameplayEngine {
       return this.pendingContentCells.size > 0 ? { kind: "yield" } : { kind: "settled" };
     }
     if (this.activityState !== "planning") return { kind: "settled" };
-    if (this.gatherPlanning !== null) return this.stepGatherPlanning(maxOperations);
+    if (this.resourcePlanning !== null) return this.stepResourcePlanning(maxOperations);
     if (this.planner === null) return { kind: "settled" };
     const result = this.planner.step(maxOperations);
     if (result.kind === "terrain-required") return this.setTerrainEffect("navigation", result.chunkX, result.chunkY, result.chunkKey);
@@ -576,9 +751,15 @@ export class GameplayEngine {
       this.worldTimeMs = nextEventTime;
       if (motion !== null) this.position = this.positionForMotion(motion, nextEventTime);
 
-      if (nextRespawnTime === nextEventTime) this.processRespawnsAt(nextEventTime);
+      if (nextRespawnTime === nextEventTime) {
+        this.processRespawnsAt(nextEventTime);
+        if (motion !== null && this.motion !== motion) {
+          this.bumpRevision();
+          return target - this.worldTimeMs;
+        }
+      }
       if (nextActionTime === nextEventTime && this.action !== null) {
-        this.completeGatherAction();
+        this.completeResourceAction();
         this.bumpRevision();
         return target - this.worldTimeMs;
       }
@@ -600,10 +781,15 @@ export class GameplayEngine {
         }
       }
       if (motion.endWorldTimeMs === nextEventTime) {
+        const completedRoutePurpose = this.routePurpose;
         this.position = clonePoint(motion.profile.end);
         this.routeIndex = motion.pathIndex + 1;
         this.motion = null;
         if (!observed) this.revealAtCurrent(true);
+        if (this.activityState !== "moving" || this.routePurpose !== completedRoutePurpose) {
+          this.bumpRevision();
+          return target - this.worldTimeMs;
+        }
         if (this.routeIndex + 1 < this.route.length) this.startMotionForCurrentLeg();
         else this.finishRoute();
       }
@@ -617,7 +803,13 @@ export class GameplayEngine {
     const levelStart = xpAtLevelStart(level);
     const gatheringLevel = levelFromTotalXp(this.gatheringXp);
     const gatheringLevelStart = xpAtLevelStart(gatheringLevel);
-    const gatheringSpeed = authoritativeGatherDuration(gatheringLevel).skillSpeedBps;
+    const woodcuttingLevel = levelFromTotalXp(this.woodcuttingXp);
+    const woodcuttingLevelStart = xpAtLevelStart(woodcuttingLevel);
+    const miningLevel = levelFromTotalXp(this.miningXp);
+    const miningLevelStart = xpAtLevelStart(miningLevel);
+    const gatheringSpeed = authoritativeResourceDuration("wild_fiber", gatheringLevel).skillSpeedBps;
+    const woodcuttingSpeed = authoritativeResourceDuration("softwood_tree", woodcuttingLevel).skillSpeedBps;
+    const miningSpeed = authoritativeResourceDuration("surface_stone", miningLevel).skillSpeedBps;
     const remainingEtaMs = this.remainingRouteEtaMs();
     const action = this.action;
     return {
@@ -626,7 +818,7 @@ export class GameplayEngine {
       gameplayEpoch: this.gameplayEpoch,
       startup: options.startup ?? this.startup,
       generatorVersion: this.generatorVersion,
-      player: this.position === null ? null : { position: clonePoint(this.position), hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2a" },
+      player: this.position === null ? null : { position: clonePoint(this.position), hp: { current: 100, max: 100 }, combatScope: "not_implemented_phase_2b" },
       task: this.task,
       activity: {
         state: this.activityState,
@@ -640,10 +832,13 @@ export class GameplayEngine {
         action: action === null ? null : {
           actionId: action.actionId,
           placementId: action.placementId,
-          prototypeId: WILD_FIBER_PROTOTYPE_ID,
+          prototypeId: action.prototypeId,
+          baseDurationMs: resourceDefinition(action.prototypeId).baseDurationMs.toString(),
           durationMs: action.durationMs.toString(),
           remainingMs: (action.endWorldTimeMs > this.worldTimeMs ? action.endWorldTimeMs - this.worldTimeMs : 0n).toString(),
           skillSpeedBps: action.skillSpeedBps,
+          toolSpeedBps: action.toolSpeedBps,
+          totalSpeedBps: action.totalSpeedBps,
         },
         reason: this.reason,
       },
@@ -659,11 +854,36 @@ export class GameplayEngine {
           nextLevelXp: xpForNextLevel(gatheringLevel),
           skillSpeedBps: gatheringSpeed,
         },
+        woodcutting: {
+          level: woodcuttingLevel,
+          totalXp: this.woodcuttingXp,
+          currentLevelXp: this.woodcuttingXp - woodcuttingLevelStart,
+          nextLevelXp: xpForNextLevel(woodcuttingLevel),
+          skillSpeedBps: woodcuttingSpeed,
+        },
+        mining: {
+          level: miningLevel,
+          totalXp: this.miningXp,
+          currentLevelXp: this.miningXp - miningLevelStart,
+          nextLevelXp: xpForNextLevel(miningLevel),
+          skillSpeedBps: miningSpeed,
+        },
       },
       inventory: this.position === null ? null : {
-        items: this.fiber === 0 ? [] : [{ itemId: FIBER_ITEM_ID, displayName: "纤维", quantity: this.fiber }],
+        items: [
+          ...(this.fiber === 0 ? [] : [{ itemId: "fiber", displayName: "纤维", category: "material", quantity: this.fiber }] as const),
+          ...(this.softwood === 0 ? [] : [{ itemId: "softwood", displayName: "软木", category: "material", quantity: this.softwood }] as const),
+          ...(this.stone === 0 ? [] : [{ itemId: "stone", displayName: "石料", category: "material", quantity: this.stone }] as const),
+          ...(this.copperOre === 0 ? [] : [{ itemId: "copper_ore", displayName: "铜矿石", category: "material", quantity: this.copperOre }] as const),
+          ...(this.wornAxe === 0 ? [] : [{ itemId: "worn_axe", displayName: "破旧斧", category: "equipment", quantity: this.wornAxe }] as const),
+          ...(this.wornPickaxe === 0 ? [] : [{ itemId: "worn_pickaxe", displayName: "破旧镐", category: "equipment", quantity: this.wornPickaxe }] as const),
+        ],
       },
-      knownTargetPrototypeIds: this.hasKnownWildFiber() ? [WILD_FIBER_PROTOTYPE_ID] : [],
+      equipment: this.position === null ? null : {
+        axe: this.equipment.axe === null ? null : this.toolEquipmentSummary(this.equipment.axe),
+        pickaxe: this.equipment.pickaxe === null ? null : this.toolEquipmentSummary(this.equipment.pickaxe),
+      },
+      knownTargetPrototypeIds: RESOURCE_PROTOTYPE_ORDER.filter((prototypeId) => this.hasKnownPrototype(prototypeId)),
       map: {
         revealedChunks: [...this.fog.entries()].sort(([left], [right]) => compareChunkKeysNumeric(left, right)).map(([chunkKey, bits]) => {
           const [chunkX, chunkY] = chunkKey.split(",") as [string, string];
@@ -695,12 +915,24 @@ export class GameplayEngine {
 
   private beginPlanning(): void {
     if (this.task === null || this.position === null) return;
-    if (this.task.kind === "Gather") {
+    if (isResourceTask(this.task)) {
       const task = this.task;
       if (task.quantity !== null && task.completedQuantity >= task.quantity) {
         this.clearRoute();
         this.activityState = "waiting";
         this.reason = TASK_COMPLETED_REASON;
+        return;
+      }
+      const definition = resourceDefinition(task.targetPrototypeId);
+      if (!this.hasRequiredTool(definition.prototypeId)) {
+        this.clearRoute();
+        this.currentTargetPlacementId = null;
+        this.activityState = "waiting";
+        this.reason = {
+          code: "MissingTool",
+          params: { slot: definition.requiredTool!.slot, minimumTier: definition.requiredTool!.minimumTier },
+          allowedActions: ["equip_item", "set_task"], diagnosticId: null,
+        };
         return;
       }
       const candidates = [...this.knownPlacements.values()]
@@ -712,7 +944,7 @@ export class GameplayEngine {
         this.beginAutoExplore();
         return;
       }
-      this.gatherPlanning = { candidates, index: 0, planner: null, best: null };
+      this.resourcePlanning = { candidates, index: 0, planner: null, best: null };
       this.activityState = "planning";
       this.routePurpose = "task_target";
       this.reason = null;
@@ -769,7 +1001,7 @@ export class GameplayEngine {
     this.reason = null;
     if (this.route.length <= 1 || plan.cost === 0n) {
       const revealed = this.revealAtCurrent(true);
-      if (this.routePurpose === "task_target") this.startGatherAction();
+      if (this.routePurpose === "task_target") this.startResourceAction();
       else if (this.isAtTaskDestination()) { this.activityState = "waiting"; this.reason = TASK_COMPLETED_REASON; }
       else if (revealed === 0 && this.routePurpose !== "auto_explore") { this.activityState = "waiting"; this.reason = NO_FRONTIER_REASON; }
       else this.beginPlanning();
@@ -804,7 +1036,7 @@ export class GameplayEngine {
   }
 
   private finishRoute(): void {
-    if (this.routePurpose === "task_target") this.startGatherAction();
+    if (this.routePurpose === "task_target") this.startResourceAction();
     else if (this.isAtTaskDestination()) { this.activityState = "waiting"; this.reason = TASK_COMPLETED_REASON; }
     else this.beginPlanning();
   }
@@ -818,7 +1050,7 @@ export class GameplayEngine {
 
   private clearRoute(): void {
     this.planner = null;
-    this.gatherPlanning = null;
+    this.resourcePlanning = null;
     this.route = [];
     this.legCosts = [];
     this.legProfiles = [];
@@ -892,16 +1124,16 @@ export class GameplayEngine {
   private activityPhase(): GameplayReadModelV1["activity"]["phase"] {
     if (this.activityState === "paused") return "paused";
     if (this.activityState === "waiting") return "waiting";
-    if (this.activityState === "acting") return "gathering";
+    if (this.activityState === "acting") return "resource_action";
     if (this.routePurpose === "auto_explore") return "auto_exploring";
     if (this.routePurpose === "task_target") return this.activityState === "planning" ? "acquiring_target" : "moving_to_target";
-    if (this.task?.kind === "Gather" && this.activityState === "planning") return "acquiring_target";
+    if (isResourceTask(this.task) && this.activityState === "planning") return "acquiring_target";
     if (this.activityState === "idle") return "idle";
     return "exploring";
   }
 
-  private hasKnownWildFiber(): boolean {
-    return [...this.knownPlacements.values()].some((placement) => placement.prototypeId === WILD_FIBER_PROTOTYPE_ID);
+  private hasKnownPrototype(prototypeId: ResourcePrototypeId): boolean {
+    return [...this.knownPlacements.values()].some((placement) => placement.prototypeId === prototypeId);
   }
 
   private discoverPlacementIfRevealed(definition: ResourcePlacementDefinition): boolean {
@@ -939,17 +1171,22 @@ export class GameplayEngine {
     this.activeContentCell = cellKey;
     const [cellXText, cellYText] = cellKey.split(",");
     if (cellXText === undefined || cellYText === undefined) throw new Error("invalid content cell key");
-    const definition = ambientPlacementCandidate(this.seed, this.campAnchor, BigInt(cellXText), BigInt(cellYText));
-    const tileX = BigInt(definition.tileX);
-    const tileY = BigInt(definition.tileY);
+    const definitions = ambientPlacementCandidates(this.seed, this.campAnchor, BigInt(cellXText), BigInt(cellYText));
+    const firstDefinition = definitions[0];
+    if (firstDefinition === undefined) throw new Error("resource prototype table is empty");
+    const tileX = BigInt(firstDefinition.tileX);
+    const tileY = BigInt(firstDefinition.tileY);
     const chunkSize = BigInt(RUNTIME_CHUNK_SIZE);
     const chunkX = floorDiv(tileX, chunkSize);
     const chunkY = floorDiv(tileY, chunkSize);
     if (!this.terrain.hasChunk(chunkX, chunkY)) return this.setTerrainEffect("content", chunkX.toString(), chunkY.toString(), `${chunkX},${chunkY}`);
     this.pendingContentCells.delete(cellKey);
     this.activeContentCell = null;
-    const guaranteeOccupiesTile = this.guaranteePlacements.some((placement) => placement.tileX === definition.tileX && placement.tileY === definition.tileY);
-    if (!guaranteeOccupiesTile && this.terrain.terrainAtLoaded(tileX, tileY) === BASE_TERRAIN_ID.Land) {
+    const occupiedTiles = new Set(this.guaranteePlacements.map((placement) => `${placement.tileX},${placement.tileY}`));
+    for (const definition of resolveAmbientPlacementConflicts(definitions, occupiedTiles)) {
+      const candidateTileX = BigInt(definition.tileX);
+      const candidateTileY = BigInt(definition.tileY);
+      if (this.terrain.terrainAtLoaded(candidateTileX, candidateTileY) !== BASE_TERRAIN_ID.Land) continue;
       this.discoverPlacementIfRevealed(definition);
     }
     this.bumpRevision();
@@ -958,9 +1195,10 @@ export class GameplayEngine {
 
   private afterContentObservation(): void {
     if (this.pendingContentCells.size > 0) return;
-    if (this.task?.kind !== "Gather") return;
+    const task = this.task;
+    if (!isResourceTask(task)) return;
     if ((this.routePurpose === "auto_explore" || this.activityState === "waiting")
-      && [...this.knownPlacements.values()].some((placement) => placement.availability === "active")) {
+      && [...this.knownPlacements.values()].some((placement) => placement.prototypeId === task.targetPrototypeId && placement.availability === "active")) {
       this.materializeCurrentPosition();
       this.clearRoute();
       this.beginPlanning();
@@ -968,8 +1206,8 @@ export class GameplayEngine {
     }
   }
 
-  private stepGatherPlanning(maxOperations: number): EngineStepResult {
-    const planning = this.gatherPlanning;
+  private stepResourcePlanning(maxOperations: number): EngineStepResult {
+    const planning = this.resourcePlanning;
     if (planning === null || this.position === null) return { kind: "settled" };
     let operations = 0;
     while (operations < maxOperations && planning.index < planning.candidates.length) {
@@ -996,7 +1234,7 @@ export class GameplayEngine {
     }
     if (planning.index < planning.candidates.length) return { kind: "yield" };
     const best = planning.best;
-    this.gatherPlanning = null;
+    this.resourcePlanning = null;
     if (best === null) {
       this.beginAutoExplore();
       return { kind: "yield" };
@@ -1007,17 +1245,25 @@ export class GameplayEngine {
     return { kind: "settled" };
   }
 
-  private startGatherAction(): void {
+  private startResourceAction(): void {
     const task = this.task;
     const placementId = this.currentTargetPlacementId;
-    if (task?.kind !== "Gather" || placementId === null) throw new Error("gather action requires a Gather task and target");
+    if (!isResourceTask(task) || placementId === null) throw new Error("resource action requires a resource task and target");
     const placement = this.knownPlacements.get(placementId);
-    if (placement === undefined || placement.availability !== "active") {
+    if (placement === undefined || placement.prototypeId !== task.targetPrototypeId || placement.availability !== "active") {
       this.currentTargetPlacementId = null;
       this.beginPlanning();
       return;
     }
-    const { durationMs, skillSpeedBps } = authoritativeGatherDuration(levelFromTotalXp(this.gatheringXp));
+    const definition = resourceDefinition(placement.prototypeId);
+    if (!this.hasRequiredTool(placement.prototypeId)) {
+      this.currentTargetPlacementId = null;
+      this.beginPlanning();
+      return;
+    }
+    const level = levelFromTotalXp(this.skillXpFor(definition.skillId));
+    const toolSpeedBps = this.equippedToolSpeedBps(placement.prototypeId);
+    const { durationMs, skillSpeedBps, totalSpeedBps } = authoritativeResourceDuration(placement.prototypeId, level, toolSpeedBps);
     const ordinal = this.nextEventOrdinal;
     this.nextEventOrdinal += 1n;
     this.clearRoute();
@@ -1025,36 +1271,41 @@ export class GameplayEngine {
     this.action = {
       actionId: `action:${this.worldTimeMs}:${ordinal}`,
       placementId,
+      prototypeId: placement.prototypeId,
       startWorldTimeMs: this.worldTimeMs,
       endWorldTimeMs: this.worldTimeMs + durationMs,
       durationMs,
       skillSpeedBps,
+      toolSpeedBps,
+      totalSpeedBps,
     };
     this.activityState = "acting";
     this.reason = null;
   }
 
-  private completeGatherAction(): void {
+  private completeResourceAction(): void {
     const action = this.action;
     const task = this.task;
-    if (action === null || task?.kind !== "Gather") throw new Error("gather completion requires an active action");
+    if (action === null || !isResourceTask(task)) throw new Error("resource completion requires an active action");
     const placement = this.knownPlacements.get(action.placementId);
-    if (placement === undefined || placement.availability !== "active") throw new Error("gather target became invalid before completion");
-    const nextFiber = this.fiber + 1;
-    const nextGatheringXp = this.gatheringXp + WILD_FIBER_XP;
+    if (placement === undefined || placement.prototypeId !== action.prototypeId || placement.prototypeId !== task.targetPrototypeId
+      || placement.availability !== "active") throw new Error("resource target became invalid before completion");
+    const definition = resourceDefinition(placement.prototypeId);
+    const nextItemQuantity = this.materialQuantity(definition.output.itemId) + definition.output.quantity;
+    const nextSkillXp = this.skillXpFor(definition.skillId) + definition.xp;
     const nextCompleted = task.completedQuantity + 1;
-    if (!Number.isSafeInteger(nextFiber) || !Number.isSafeInteger(nextGatheringXp) || !Number.isSafeInteger(nextCompleted)) {
-      throw new QuantityOverflowError("gather settlement exceeds safe integer storage");
+    if (!Number.isSafeInteger(nextItemQuantity) || !Number.isSafeInteger(nextSkillXp) || !Number.isSafeInteger(nextCompleted)) {
+      throw new QuantityOverflowError("resource settlement exceeds safe integer storage");
     }
-    const nextAvailable = this.worldTimeMs + WILD_FIBER_RESPAWN_DURATION_MS;
+    const nextAvailable = this.worldTimeMs + definition.respawnDurationMs;
     this.knownPlacements.set(placement.placementId, {
       ...placement,
       availability: "depleted",
       depletedWorldTimeMs: this.worldTimeMs.toString(),
       nextAvailableWorldTimeMs: nextAvailable.toString(),
     });
-    this.fiber = nextFiber;
-    this.gatheringXp = nextGatheringXp;
+    this.setMaterialQuantity(definition.output.itemId, nextItemQuantity);
+    this.setSkillXp(definition.skillId, nextSkillXp);
     this.task = { ...task, completedQuantity: nextCompleted };
     this.nextEventOrdinal += 1n;
     this.action = null;
@@ -1095,7 +1346,7 @@ export class GameplayEngine {
       });
       awakened = true;
     }
-    if (awakened && this.task?.kind === "Gather" && (this.activityState === "waiting" || this.routePurpose === "auto_explore")) {
+    if (awakened && isResourceTask(this.task) && (this.activityState === "waiting" || this.routePurpose === "auto_explore")) {
       this.materializeCurrentPosition();
       this.clearRoute();
       this.beginPlanning();
@@ -1104,14 +1355,22 @@ export class GameplayEngine {
 
   private resourcePlacementSummaries(): GameplayReadModelV1["map"]["resourcePlacements"] {
     return [...this.knownPlacements.values()].sort((left, right) => left.placementId < right.placementId ? -1 : 1).map((placement) => {
+      const definition = resourceDefinition(placement.prototypeId);
+      const skillLevel = levelFromTotalXp(this.skillXpFor(definition.skillId));
       const remaining = placement.nextAvailableWorldTimeMs === null ? null
         : BigInt(placement.nextAvailableWorldTimeMs) > this.worldTimeMs ? BigInt(placement.nextAvailableWorldTimeMs) - this.worldTimeMs : 0n;
       const state = placement.availability === "active" ? "active" as const
         : placement.depletedWorldTimeMs === this.worldTimeMs.toString() ? "depleted" as const : "respawning" as const;
       return {
         placementId: placement.placementId,
-        prototypeId: WILD_FIBER_PROTOTYPE_ID,
-        displayName: "野生纤维" as const,
+        prototypeId: placement.prototypeId,
+        displayName: definition.displayName,
+        taskKind: definition.taskKind,
+        skillId: definition.skillId,
+        requiredLevel: definition.requiredLevel,
+        locked: skillLevel < definition.requiredLevel,
+        requiredTool: definition.requiredTool,
+        mapColor: definition.mapColor,
         point: clonePoint(placement.point),
         state,
         respawnRemainingMs: remaining?.toString() ?? null,
@@ -1119,6 +1378,86 @@ export class GameplayEngine {
           : this.currentTargetPlacementId === placement.placementId ? "reachable" as const : "unknown" as const,
       };
     });
+  }
+
+  private skillXpFor(skillId: ResourceSkillId): number {
+    switch (skillId) {
+      case "gathering": return this.gatheringXp;
+      case "woodcutting": return this.woodcuttingXp;
+      case "mining": return this.miningXp;
+    }
+  }
+
+  private setSkillXp(skillId: ResourceSkillId, value: number): void {
+    switch (skillId) {
+      case "gathering": this.gatheringXp = value; return;
+      case "woodcutting": this.woodcuttingXp = value; return;
+      case "mining": this.miningXp = value; return;
+    }
+  }
+
+  private materialQuantity(itemId: MaterialItemId): number {
+    switch (itemId) {
+      case "fiber": return this.fiber;
+      case "softwood": return this.softwood;
+      case "stone": return this.stone;
+      case "copper_ore": return this.copperOre;
+    }
+  }
+
+  private setMaterialQuantity(itemId: MaterialItemId, value: number): void {
+    switch (itemId) {
+      case "fiber": this.fiber = value; return;
+      case "softwood": this.softwood = value; return;
+      case "stone": this.stone = value; return;
+      case "copper_ore": this.copperOre = value; return;
+    }
+  }
+
+  private toolInventoryQuantity(itemId: ToolItemId): number {
+    return itemId === "worn_axe" ? this.wornAxe : this.wornPickaxe;
+  }
+
+  private setToolInventoryQuantity(itemId: ToolItemId, value: number): void {
+    if (itemId === "worn_axe") this.wornAxe = value;
+    else this.wornPickaxe = value;
+  }
+
+  private toolEquipmentSummary(itemId: ToolItemId): NonNullable<GameplayReadModelV1["equipment"]>[ToolSlot] {
+    const tool = TOOL_DEFINITIONS[itemId];
+    return { itemId, displayName: tool.displayName, tier: tool.tier, speedBps: tool.speedBps };
+  }
+
+  private hasRequiredTool(prototypeId: ResourcePrototypeId): boolean {
+    const requirement = resourceDefinition(prototypeId).requiredTool;
+    if (requirement === null) return true;
+    const equippedItemId = this.equipment[requirement.slot];
+    if (equippedItemId === null) return false;
+    const tool = TOOL_DEFINITIONS[equippedItemId];
+    return tool.slot === requirement.slot && tool.tier >= requirement.minimumTier;
+  }
+
+  private equippedToolSpeedBps(prototypeId: ResourcePrototypeId): number {
+    const requirement = resourceDefinition(prototypeId).requiredTool;
+    if (requirement === null) return 0;
+    const equippedItemId = this.equipment[requirement.slot];
+    return equippedItemId === null ? 0 : TOOL_DEFINITIONS[equippedItemId].speedBps;
+  }
+
+  private restartExecutionAfterEquipmentChange(): void {
+    this.plannerGeneration += 1;
+    this.materializeCurrentPosition();
+    this.pendingTerrain = null;
+    this.action = null;
+    this.currentTargetPlacementId = null;
+    this.clearRoute();
+    if (this.task === null) {
+      this.activityState = "idle";
+      this.reason = null;
+    } else {
+      this.beginPlanning();
+    }
+    this.bumpRevision();
   }
 
   private persistedWorldChunks(): EnginePersistedState["worldChunks"] {

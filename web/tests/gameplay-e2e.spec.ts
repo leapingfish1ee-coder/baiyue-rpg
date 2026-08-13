@@ -37,30 +37,59 @@ test("create, explore, cancel, choose a destination, save, and restore", async (
   await expect(page.locator("#player-position")).toHaveText(selectedTile);
 });
 
-test("discover wild fiber, settle one real gather atomically, complete, and reload", async ({ page }) => {
+test("woodcut twice with tool cancellation, re-equip, mine once, and reload without duplicate settlement", async ({ page }) => {
+  test.setTimeout(90_000);
   await page.goto("./");
   await expect(page.locator("#create-world")).toBeEnabled({ timeout: 30_000 });
   await page.locator("#world-seed").fill("20260809");
   await page.locator("#create-world").click();
 
   await expect(page.locator("#gather-controls")).toBeVisible({ timeout: 30_000 });
-  await expect(page.locator("#resource-list li").first()).toContainText("野生纤维");
-  await page.locator("#gather-quantity").fill("1");
+  await page.locator("#choose-destination").click();
+  await page.locator("#destination-x").fill("-6");
+  await page.locator("#destination-y").fill("2");
+  await page.locator("#destination-confirm").click();
+  await expect(page.locator("#activity-state")).toContainText("已抵达目的地", { timeout: 30_000 });
+  await expect.poll(() => page.locator("#resource-list li").filter({ hasText: "软木树" }).count()).toBeGreaterThanOrEqual(2);
+  await expect(page.locator("#gather-target option[value=softwood_tree]")).toHaveCount(1);
+  await page.locator("#gather-target").selectOption("softwood_tree");
+  await page.locator("#gather-quantity").fill("2");
   await page.locator("#gather-finite").click();
 
-  await expect(page.locator("#activity-state")).toContainText("采集中", { timeout: 30_000 });
-  await expect(page.locator("#fiber-quantity")).toHaveText("1", { timeout: 30_000 });
-  await expect(page.locator("#gathering-xp")).toContainText("6 / 100 XP");
-  await expect(page.locator("#resource-list li").first()).not.toContainText("可采集");
+  await expect(page.locator("#activity-state")).toContainText("伐木", { timeout: 30_000 });
+  const softwoodRow = page.locator("#material-list .compact-stat").filter({ hasText: "软木" });
+  const stoneRow = page.locator("#material-list .compact-stat").filter({ hasText: "石料" });
+  await expect(softwoodRow).toHaveText(/软木\s*1/, { timeout: 30_000 });
+  await expect(page.locator("#woodcutting-xp")).toContainText("10 / 100 XP");
+  await expect(page.locator("#gather-progress")).toHaveText("1 / 2");
+
+  await expect(page.locator("#activity-state")).toContainText("伐木", { timeout: 30_000 });
+  await page.waitForTimeout(750);
+  await page.locator("#axe-toggle").click();
+  await expect(page.locator("#activity-state")).toContainText("缺少斧");
+  await expect(page.locator("#gather-progress")).toHaveText("1 / 2");
+  await expect(softwoodRow).toHaveText(/软木\s*1/);
+  await expect(page.locator("#tool-inventory-list")).toContainText("破旧斧");
+
+  await page.locator("#axe-toggle").click();
+  await expect(softwoodRow).toHaveText(/软木\s*2/, { timeout: 30_000 });
+  await expect(page.locator("#woodcutting-xp")).toContainText("20 / 100 XP");
+  await expect(page.locator("#gather-progress")).toHaveText("2 / 2");
+
+  await page.locator("#gather-target").selectOption("surface_stone");
+  await page.locator("#gather-quantity").fill("1");
+  await page.locator("#gather-finite").click();
+  await expect(page.locator("#activity-state")).toContainText("采矿", { timeout: 30_000 });
+  await expect(stoneRow).toHaveText(/石料\s*1/, { timeout: 30_000 });
+  await expect(page.locator("#mining-xp")).toContainText("12 / 100 XP");
   await expect(page.locator("#gather-progress")).toHaveText("1 / 1");
-  await expect(page.locator("#activity-state")).toContainText("采集完成");
-  await expect(page.locator("#fiber-quantity")).toHaveText("1");
-  await expect(page.locator("#gathering-xp")).toContainText("6 / 100 XP");
   await expect(page.locator("#save-state")).toContainText("已保存");
 
   await page.reload();
   await expect(page.locator("#journey-panel")).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("#gather-progress")).toHaveText("1 / 1");
-  await expect(page.locator("#fiber-quantity")).toHaveText("1");
-  await expect(page.locator("#gathering-xp")).toContainText("6 / 100 XP");
+  await expect(softwoodRow).toHaveText(/软木\s*2/);
+  await expect(stoneRow).toHaveText(/石料\s*1/);
+  await expect(page.locator("#woodcutting-xp")).toContainText("20 / 100 XP");
+  await expect(page.locator("#mining-xp")).toContainText("12 / 100 XP");
 });

@@ -2,7 +2,8 @@ import { defineConfig, devices } from "@playwright/test";
 
 const rawBasePath = process.env.SMOKE_BASE_PATH ?? "/";
 const basePath = `/${rawBasePath.replace(/^\/+|\/+$/g, "")}/`.replace("//", "/");
-const serverOrigin = "http://127.0.0.1:4173";
+const testPort = process.env.BAIYUE_TEST_PORT ?? "4173";
+const serverOrigin = `http://127.0.0.1:${testPort}`;
 const serverUrl = `${serverOrigin}${basePath}`;
 
 export default defineConfig({
@@ -26,7 +27,9 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: process.env.BAIYUE_WORKER_TEST === "1" ? "npm run preview:test-worker" : "npm run preview:test",
+    command: process.env.BAIYUE_WORKER_TEST === "1"
+      ? `./node_modules/.bin/vite preview --outDir dist-worker-test --host 127.0.0.1 --port ${testPort}`
+      : `./node_modules/.bin/vite preview --host 127.0.0.1 --port ${testPort}`,
     url: serverUrl,
     reuseExistingServer: !process.env.CI,
     timeout: 30_000,

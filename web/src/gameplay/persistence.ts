@@ -31,6 +31,7 @@ import {
 import { base64ToFogBits, fogBitsToBase64, FOG_BYTES_PER_CHUNK } from "./fog.ts";
 import { floorDiv, levelFromTotalXp } from "./math.ts";
 import type { KnownResourcePlacement } from "./engine.ts";
+import { isResourcePrototypeId, taskKindMatchesPrototype, type ResourcePrototypeId, type ToolItemId, type ToolSlot } from "./content.ts";
 
 export const GAMEPLAY_DATABASE_NAME = "baiyue-rpg-gameplay";
 export const GAMEPLAY_LOCK_NAME = "baiyue-rpg:active-save";
@@ -38,7 +39,7 @@ export const INTEGRITY_ALGORITHM = "sha256-record-v1" as const;
 
 export type CommandReceiptRecord = Readonly<{
   command_id: CommandId;
-  command_type: "CreateWorld" | "SetTask" | "CancelTask";
+  command_type: "CreateWorld" | "SetTask" | "CancelTask" | "EquipItem" | "UnequipSlot";
   payload_sha256: string;
   terminal_status: "accepted";
   save_revision: number;
@@ -47,7 +48,9 @@ export type CommandReceiptRecord = Readonly<{
 
 export type PersistedTask =
   | Readonly<{ task_id: string; kind: "Explore"; mode: "continuous" | "destination"; destination: WorldPoint | null; created_world_time_ms: string }>
-  | Readonly<{ task_id: string; kind: "Gather"; target_prototype_id: "wild_fiber"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>;
+  | Readonly<{ task_id: string; kind: "Gather"; target_prototype_id: "wild_fiber"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
+  | Readonly<{ task_id: string; kind: "Woodcut"; target_prototype_id: "softwood_tree"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>
+  | Readonly<{ task_id: string; kind: "Mine"; target_prototype_id: "surface_stone" | "shallow_copper_deposit"; quantity: number | null; completed_quantity: number; created_world_time_ms: string }>;
 
 export type PersistedMotionLeg = Readonly<{
   start: WorldPoint;
@@ -69,10 +72,13 @@ export type PersistedExecution = Readonly<{
   action: Readonly<{
     action_id: string;
     placement_id: string;
+    prototype_id: ResourcePrototypeId;
     start_world_time_ms: string;
     end_world_time_ms: string;
     duration_ms: string;
     skill_speed_bps: number;
+    tool_speed_bps: number;
+    total_speed_bps: number;
   }> | null;
   waiting_reason: ActivityReason | null;
 }>;
@@ -84,9 +90,9 @@ export type MetaRecord = Readonly<{
   committed_wall_clock_ms: number;
   committed_world_time_ms: string;
   db_schema_version: 1;
-  save_schema_version: 2;
-  game_rules_version: 2;
-  content_version: 2;
+  save_schema_version: 3;
+  game_rules_version: 3;
+  content_version: 3;
   generator_version: number;
   integrity_algorithm: typeof INTEGRITY_ALGORITHM;
   core_checksum_sha256: string;
@@ -102,8 +108,13 @@ export type CoreRecord = Readonly<{
   camp_anchor: WorldPoint;
   hp: Readonly<{ current: 100; max: 100 }>;
   exploration: Readonly<{ level: number; total_xp: number }>;
-  skills: Readonly<{ gathering: Readonly<{ level: number; total_xp: number }> }>;
-  inventory: Readonly<{ fiber: number }>;
+  skills: Readonly<{
+    gathering: Readonly<{ level: number; total_xp: number }>;
+    woodcutting: Readonly<{ level: number; total_xp: number }>;
+    mining: Readonly<{ level: number; total_xp: number }>;
+  }>;
+  inventory: Readonly<{ fiber: number; softwood: number; stone: number; copper_ore: number; worn_axe: number; worn_pickaxe: number }>;
+  equipment: Readonly<Record<ToolSlot, ToolItemId | null>>;
   task: PersistedTask | null;
   execution: PersistedExecution;
   command_receipts: readonly CommandReceiptRecord[];
@@ -234,9 +245,10 @@ function isPersistedTask(value: unknown): value is PersistedTask {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
   const task = value as Record<string, unknown>;
   if (!isTaskId(task.task_id) || !isCanonicalUnsignedDecimal(task.created_world_time_ms)) return false;
-  if (task.kind === "Gather") {
+  if (task.kind === "Gather" || task.kind === "Woodcut" || task.kind === "Mine") {
     return exactObject(task, ["task_id", "kind", "target_prototype_id", "quantity", "completed_quantity", "created_world_time_ms"])
-      && task.target_prototype_id === "wild_fiber" && (task.quantity === null || (isSafeUint(task.quantity) && task.quantity > 0))
+      && isResourcePrototypeId(task.target_prototype_id) && taskKindMatchesPrototype(task.kind, task.target_prototype_id)
+      && (task.quantity === null || (isSafeUint(task.quantity) && task.quantity > 0))
       && isSafeUint(task.completed_quantity) && (task.quantity === null || task.completed_quantity <= task.quantity);
   }
   if (!exactObject(task, ["task_id", "kind", "mode", "destination", "created_world_time_ms"]) || task.kind !== "Explore") return false;
@@ -260,12 +272,15 @@ function isExecution(value: unknown): value is PersistedExecution {
   if (value.route.length === 0 ? value.route_index !== 0 : value.route_index >= value.route.length) return false;
   if (!(value.motion === null || isMotion(value.motion)) || !(value.waiting_reason === null || isActivityReason(value.waiting_reason))) return false;
   if (!(value.target_placement_id === null || isPlacementId(value.target_placement_id))) return false;
-  if (!(value.action === null || (exactObject(value.action, ["action_id", "placement_id", "start_world_time_ms", "end_world_time_ms", "duration_ms", "skill_speed_bps"])
+  if (!(value.action === null || (exactObject(value.action, ["action_id", "placement_id", "prototype_id", "start_world_time_ms", "end_world_time_ms", "duration_ms", "skill_speed_bps", "tool_speed_bps", "total_speed_bps"])
     && isActionId(value.action.action_id) && isPlacementId(value.action.placement_id)
+    && isResourcePrototypeId(value.action.prototype_id)
     && isCanonicalUnsignedDecimal(value.action.start_world_time_ms) && isCanonicalUnsignedDecimal(value.action.end_world_time_ms)
     && isCanonicalUnsignedDecimal(value.action.duration_ms) && BigInt(value.action.end_world_time_ms) > BigInt(value.action.start_world_time_ms)
     && BigInt(value.action.end_world_time_ms) - BigInt(value.action.start_world_time_ms) === BigInt(value.action.duration_ms)
-    && isSafeUint(value.action.skill_speed_bps) && value.action.skill_speed_bps <= 2_500))) return false;
+    && isSafeUint(value.action.skill_speed_bps) && value.action.skill_speed_bps <= 2_500
+    && isSafeUint(value.action.tool_speed_bps) && isSafeUint(value.action.total_speed_bps)
+    && value.action.total_speed_bps === value.action.skill_speed_bps + value.action.tool_speed_bps))) return false;
   if (value.state === "moving" && value.motion === null) return false;
   if (value.state === "acting" && value.action === null) return false;
   return value.state === "waiting" || value.state === "paused" ? value.waiting_reason !== null : value.waiting_reason === null;
@@ -273,22 +288,32 @@ function isExecution(value: unknown): value is PersistedExecution {
 
 function isReceipt(value: unknown): value is CommandReceiptRecord {
   return exactObject(value, ["command_id", "command_type", "payload_sha256", "terminal_status", "save_revision", "reason_code"])
-    && isCommandId(value.command_id) && ["CreateWorld", "SetTask", "CancelTask"].includes(value.command_type as string)
+    && isCommandId(value.command_id) && ["CreateWorld", "SetTask", "CancelTask", "EquipItem", "UnequipSlot"].includes(value.command_type as string)
     && isHexChecksum(value.payload_sha256) && value.terminal_status === "accepted" && isSafeUint(value.save_revision)
     && value.save_revision >= 1 && value.reason_code === null;
 }
 
 export function isCoreRecord(value: unknown): value is CoreRecord {
-  if (!exactObject(value, ["save_id", "revision", "seed", "world_time_ms", "position", "camp_anchor", "hp", "exploration", "skills", "inventory", "task", "execution", "command_receipts", "next_event_ordinal", "last_offline_report"])) return false;
+  if (!exactObject(value, ["save_id", "revision", "seed", "world_time_ms", "position", "camp_anchor", "hp", "exploration", "skills", "inventory", "equipment", "task", "execution", "command_receipts", "next_event_ordinal", "last_offline_report"])) return false;
   if (value.save_id !== SAVE_ID || !isSafeUint(value.revision) || value.revision < 1 || !isSeedDecimal(value.seed)
     || !isCanonicalUnsignedDecimal(value.world_time_ms) || !isWorldPoint(value.position) || !isWorldPoint(value.camp_anchor)) return false;
   if (!exactObject(value.hp, ["current", "max"]) || value.hp.current !== 100 || value.hp.max !== 100) return false;
   if (!exactObject(value.exploration, ["level", "total_xp"]) || !isSafeUint(value.exploration.level)
     || value.exploration.level < 1 || value.exploration.level > 100 || !isSafeUint(value.exploration.total_xp)) return false;
-  if (!exactObject(value.skills, ["gathering"]) || !exactObject(value.skills.gathering, ["level", "total_xp"])
-    || !isSafeUint(value.skills.gathering.level) || value.skills.gathering.level < 1 || value.skills.gathering.level > 100
-    || !isSafeUint(value.skills.gathering.total_xp) || value.skills.gathering.level !== levelFromTotalXp(value.skills.gathering.total_xp)) return false;
-  if (!exactObject(value.inventory, ["fiber"]) || !isSafeUint(value.inventory.fiber)) return false;
+  if (!exactObject(value.skills, ["gathering", "woodcutting", "mining"])) return false;
+  for (const skillId of ["gathering", "woodcutting", "mining"] as const) {
+    const skill = value.skills[skillId];
+    if (!exactObject(skill, ["level", "total_xp"]) || !isSafeUint(skill.level) || skill.level < 1 || skill.level > 100
+      || !isSafeUint(skill.total_xp) || skill.level !== levelFromTotalXp(skill.total_xp)) return false;
+  }
+  if (!exactObject(value.inventory, ["fiber", "softwood", "stone", "copper_ore", "worn_axe", "worn_pickaxe"])
+    || !isSafeUint(value.inventory.fiber) || !isSafeUint(value.inventory.softwood) || !isSafeUint(value.inventory.stone)
+    || !isSafeUint(value.inventory.copper_ore) || !isSafeUint(value.inventory.worn_axe) || !isSafeUint(value.inventory.worn_pickaxe)) return false;
+  if (!exactObject(value.equipment, ["axe", "pickaxe"])
+    || !(value.equipment.axe === null || value.equipment.axe === "worn_axe")
+    || !(value.equipment.pickaxe === null || value.equipment.pickaxe === "worn_pickaxe")
+    || value.inventory.worn_axe + (value.equipment.axe === "worn_axe" ? 1 : 0) !== 1
+    || value.inventory.worn_pickaxe + (value.equipment.pickaxe === "worn_pickaxe" ? 1 : 0) !== 1) return false;
   if (!(value.task === null || isPersistedTask(value.task)) || !isExecution(value.execution)
     || !Array.isArray(value.command_receipts) || !value.command_receipts.every(isReceipt)
     || !isCanonicalUnsignedDecimal(value.next_event_ordinal) || !(value.last_offline_report === null || isOfflineReport(value.last_offline_report))) return false;
@@ -306,7 +331,8 @@ export function isCoreRecord(value: unknown): value is CoreRecord {
   if (execution.state === "planning" && (value.task === null || execution.route.length !== 0 || execution.motion !== null || execution.waiting_reason !== null)) return false;
   if ((execution.state === "waiting" || execution.state === "moving") && value.task === null) return false;
   if (execution.state === "waiting" && execution.motion !== null) return false;
-  if (execution.state === "acting" && (value.task?.kind !== "Gather" || execution.action === null || execution.target_placement_id !== execution.action.placement_id)) return false;
+  if (execution.state === "acting" && (value.task === null || value.task.kind === "Explore" || execution.action === null
+    || execution.target_placement_id !== execution.action.placement_id || value.task.target_prototype_id !== execution.action.prototype_id)) return false;
   if (execution.state !== "acting" && execution.action !== null) return false;
   if (execution.state === "acting" && execution.action !== null
     && (BigInt(execution.action.start_world_time_ms) > BigInt(value.world_time_ms)
@@ -342,7 +368,7 @@ export function isMetaRecord(value: unknown): value is MetaRecord {
 
 function isKnownPlacement(value: unknown): value is KnownResourcePlacement {
   return exactObject(value, ["placementId", "prototypeId", "source", "tileX", "tileY", "point", "availability", "spawnCycle", "depletedWorldTimeMs", "nextAvailableWorldTimeMs"])
-    && isPlacementId(value.placementId) && value.prototypeId === "wild_fiber" && (value.source === "ambient" || value.source === "guarantee")
+    && isPlacementId(value.placementId) && isResourcePrototypeId(value.prototypeId) && (value.source === "ambient" || value.source === "guarantee")
     && isCanonicalSignedDecimal(value.tileX, -(1n << 31n), (1n << 31n) - 1n)
     && isCanonicalSignedDecimal(value.tileY, -(1n << 31n), (1n << 31n) - 1n) && isWorldPoint(value.point)
     && value.point.x === (BigInt(value.tileX) * 1024n + 512n).toString()
@@ -727,7 +753,7 @@ async function validateSnapshot(snapshot: PersistedSnapshot, generatorVersion: n
     const action = core.execution.action;
     const target = action === null ? undefined : chunks.flatMap((chunk) => chunk.known_placements)
       .find((placement) => placement.placementId === action.placement_id);
-    if (target === undefined || target.availability !== "active") {
+    if (target === undefined || target.availability !== "active" || target.prototypeId !== action?.prototype_id) {
       throw new PersistenceError("storage/integrity_failed", "active resource action does not reference an active known placement");
     }
   }

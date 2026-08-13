@@ -16,8 +16,9 @@ import {
   type LifecycleError,
   type MainToGameplayWorker,
   type OfflineReport,
+  type TaskIntent,
 } from "./gameplay/contracts.ts";
-import { GameplayEngine, InvalidWorldSeedError, QuantityOverflowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
+import { GameplayEngine, InvalidEquipmentError, InvalidWorldSeedError, ItemUnavailableError, QuantityOverflowError, SkillLevelTooLowError, UnknownTargetPrototypeError, type EngineTerrainEffect } from "./gameplay/engine.ts";
 import { ContentPlacementError } from "./gameplay/content.ts";
 import { floorDiv, levelFromTotalXp, tileCoordinate } from "./gameplay/math.ts";
 import { RUNTIME_CHUNK_SIZE } from "./world-contract.ts";
@@ -31,6 +32,7 @@ import {
   type CoreRecord,
   type GameplayLock,
   type PersistedSnapshot,
+  type PersistedTask,
   type ResumeClaimRecord,
 } from "./gameplay/persistence.ts";
 
@@ -365,6 +367,40 @@ function backupCommandError(error: BackupError): CommandError {
   return { code: error.code, params: null, diagnosticId: diagnosticId("backup", error.code.replace("/", "-")) };
 }
 
+function persistTask(task: TaskIntent | null): PersistedTask | null {
+  if (task === null) return null;
+  if (task.kind === "Explore") return {
+    task_id: task.taskId, kind: "Explore", mode: task.mode, destination: task.destination,
+    created_world_time_ms: task.createdWorldTimeMs,
+  };
+  const common = {
+    task_id: task.taskId, quantity: task.quantity, completed_quantity: task.completedQuantity,
+    created_world_time_ms: task.createdWorldTimeMs,
+  };
+  switch (task.kind) {
+    case "Gather": return { ...common, kind: "Gather", target_prototype_id: "wild_fiber" };
+    case "Woodcut": return { ...common, kind: "Woodcut", target_prototype_id: "softwood_tree" };
+    case "Mine": return { ...common, kind: "Mine", target_prototype_id: task.targetPrototypeId };
+  }
+}
+
+function restoreTask(task: PersistedTask | null): TaskIntent | null {
+  if (task === null) return null;
+  if (task.kind === "Explore") return {
+    taskId: task.task_id, kind: "Explore", mode: task.mode, destination: task.destination,
+    createdWorldTimeMs: task.created_world_time_ms,
+  };
+  const common = {
+    taskId: task.task_id, quantity: task.quantity, completedQuantity: task.completed_quantity,
+    createdWorldTimeMs: task.created_world_time_ms,
+  };
+  switch (task.kind) {
+    case "Gather": return { ...common, kind: "Gather", targetPrototypeId: "wild_fiber" };
+    case "Woodcut": return { ...common, kind: "Woodcut", targetPrototypeId: "softwood_tree" };
+    case "Mine": return { ...common, kind: "Mine", targetPrototypeId: task.target_prototype_id };
+  }
+}
+
 function coreFromEngine(
   revision: number,
   receipts: readonly CommandReceiptRecord[],
@@ -372,20 +408,7 @@ function coreFromEngine(
 ): CoreRecord {
   if (engine === null) throw new Error("gameplay engine is unavailable");
   const state = engine.persistedState();
-  const task = state.task === null ? null : state.task.kind === "Gather" ? {
-    task_id: state.task.taskId,
-    kind: state.task.kind,
-    target_prototype_id: state.task.targetPrototypeId,
-    quantity: state.task.quantity,
-    completed_quantity: state.task.completedQuantity,
-    created_world_time_ms: state.task.createdWorldTimeMs,
-  } as const : {
-    task_id: state.task.taskId,
-    kind: state.task.kind,
-    mode: state.task.mode,
-    destination: state.task.destination,
-    created_world_time_ms: state.task.createdWorldTimeMs,
-  } as const;
+  const task = persistTask(state.task);
   return {
     save_id: "save:local",
     revision,
@@ -395,8 +418,16 @@ function coreFromEngine(
     camp_anchor: state.campAnchor,
     hp: { current: 100, max: 100 },
     exploration: { level: levelFromTotalXp(state.totalXp), total_xp: state.totalXp },
-    skills: { gathering: { level: levelFromTotalXp(state.gatheringXp), total_xp: state.gatheringXp } },
-    inventory: { fiber: state.fiber },
+    skills: {
+      gathering: { level: levelFromTotalXp(state.gatheringXp), total_xp: state.gatheringXp },
+      woodcutting: { level: levelFromTotalXp(state.woodcuttingXp), total_xp: state.woodcuttingXp },
+      mining: { level: levelFromTotalXp(state.miningXp), total_xp: state.miningXp },
+    },
+    inventory: {
+      fiber: state.fiber, softwood: state.softwood, stone: state.stone, copper_ore: state.copperOre,
+      worn_axe: state.wornAxe, worn_pickaxe: state.wornPickaxe,
+    },
+    equipment: { ...state.equipment },
     task,
     execution: {
       state: state.execution.state,
@@ -416,10 +447,13 @@ function coreFromEngine(
       action: state.execution.action === null ? null : {
         action_id: state.execution.action.actionId,
         placement_id: state.execution.action.placementId,
+        prototype_id: state.execution.action.prototypeId,
         start_world_time_ms: state.execution.action.startWorldTimeMs,
         end_world_time_ms: state.execution.action.endWorldTimeMs,
         duration_ms: state.execution.action.durationMs,
         skill_speed_bps: state.execution.action.skillSpeedBps,
+        tool_speed_bps: state.execution.action.toolSpeedBps,
+        total_speed_bps: state.execution.action.totalSpeedBps,
       },
       waiting_reason: state.execution.waitingReason,
     },
@@ -440,31 +474,29 @@ function restoreEngine(snapshot: PersistedSnapshot): void {
     campAnchor: core.camp_anchor,
     totalXp: core.exploration.total_xp,
     gatheringXp: core.skills.gathering.total_xp,
+    woodcuttingXp: core.skills.woodcutting.total_xp,
+    miningXp: core.skills.mining.total_xp,
     fiber: core.inventory.fiber,
-    task: core.task === null ? null : core.task.kind === "Gather" ? {
-      taskId: core.task.task_id,
-      kind: core.task.kind,
-      targetPrototypeId: core.task.target_prototype_id,
-      quantity: core.task.quantity,
-      completedQuantity: core.task.completed_quantity,
-      createdWorldTimeMs: core.task.created_world_time_ms,
-    } : {
-      taskId: core.task.task_id,
-      kind: core.task.kind,
-      mode: core.task.mode,
-      destination: core.task.destination,
-      createdWorldTimeMs: core.task.created_world_time_ms,
-    },
+    softwood: core.inventory.softwood,
+    stone: core.inventory.stone,
+    copperOre: core.inventory.copper_ore,
+    wornAxe: core.inventory.worn_axe,
+    wornPickaxe: core.inventory.worn_pickaxe,
+    equipment: { ...core.equipment },
+    task: restoreTask(core.task),
     executionState: core.execution.state,
     routePurpose: core.execution.route_purpose,
     targetPlacementId: core.execution.target_placement_id,
     action: core.execution.action === null ? null : {
       actionId: core.execution.action.action_id,
       placementId: core.execution.action.placement_id,
+      prototypeId: core.execution.action.prototype_id,
       startWorldTimeMs: core.execution.action.start_world_time_ms,
       endWorldTimeMs: core.execution.action.end_world_time_ms,
       durationMs: core.execution.action.duration_ms,
       skillSpeedBps: core.execution.action.skill_speed_bps,
+      toolSpeedBps: core.execution.action.tool_speed_bps,
+      totalSpeedBps: core.execution.action.total_speed_bps,
     },
     waitingReason: core.execution.waiting_reason,
     worldChunks: snapshot.chunks.map((chunk) => ({
@@ -530,7 +562,6 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
   if (engine === null || storage === null || committedSnapshot === null) throw new PersistenceError("storage/unavailable", "offline processing requires a loaded save");
   const base = committedSnapshot;
   const before = engine.snapshot();
-  const levelBefore = levelFromTotalXp(before.totalXp);
   const taskBefore = taskClone(before.task);
   const credited = BigInt(claim.credited_duration_ms);
   const alreadyProcessed = before.worldTimeMs - BigInt(claim.base_world_time_ms);
@@ -592,11 +623,19 @@ async function processOfflineClaim(claim: ResumeClaimRecord): Promise<void> {
     toWorldTimeMs: after.worldTimeMs.toString(),
     taskBefore,
     taskAfter: taskClone(after.task),
-    xpGained: after.totalXp - before.totalXp,
-    levelsGained: levelFromTotalXp(after.totalXp) - levelBefore,
     revealedTiles: after.revealedTileCount - before.revealedTileCount,
-    fiberGained: after.fiber - before.fiber,
-    gatheringXpGained: after.gatheringXp - before.gatheringXp,
+    itemGains: [
+      { itemId: "fiber" as const, displayName: "纤维" as const, quantity: after.fiber - before.fiber },
+      { itemId: "softwood" as const, displayName: "软木" as const, quantity: after.softwood - before.softwood },
+      { itemId: "stone" as const, displayName: "石料" as const, quantity: after.stone - before.stone },
+      { itemId: "copper_ore" as const, displayName: "铜矿石" as const, quantity: after.copperOre - before.copperOre },
+    ].filter((gain) => gain.quantity > 0),
+    skillXpGains: [
+      { skillId: "exploration" as const, displayName: "探索" as const, xp: after.totalXp - before.totalXp },
+      { skillId: "gathering" as const, displayName: "采集" as const, xp: after.gatheringXp - before.gatheringXp },
+      { skillId: "woodcutting" as const, displayName: "伐木" as const, xp: after.woodcuttingXp - before.woodcuttingXp },
+      { skillId: "mining" as const, displayName: "采矿" as const, xp: after.miningXp - before.miningXp },
+    ].filter((gain) => gain.xp > 0),
     stopReason: engine.toReadModel().activity.reason,
     committedRevision: nextRevision,
   };
@@ -638,11 +677,9 @@ async function processOfflineAtInitialization(currentWallClockMs: number): Promi
         toWorldTimeMs: snapshot.worldTimeMs.toString(),
         taskBefore: taskClone(snapshot.task),
         taskAfter: taskClone(snapshot.task),
-        xpGained: 0,
-        levelsGained: 0,
         revealedTiles: 0,
-        fiberGained: 0,
-        gatheringXpGained: 0,
+        itemGains: [],
+        skillXpGains: [],
         stopReason: null,
         committedRevision: base.meta.current_revision,
       };
@@ -789,8 +826,8 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
       case "SetTask":
         if (engine === null) throw new PersistenceError("storage/unavailable", "SetTask requires an initialized engine");
         advanceOnlineClock();
-        cancelPendingTerrain("task command invalidated planning continuation");
         engine.setTask(command.commandId, command.task);
+        cancelPendingTerrain("task command invalidated planning continuation");
         markDirty();
         if (storage === null || committedSnapshot === null) throw new PersistenceError("storage/unavailable", "SetTask requires a committed save");
         {
@@ -835,6 +872,33 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
         }
         emitReadModel(true);
         break;
+      case "EquipItem":
+      case "UnequipSlot":
+        if (engine === null) throw new PersistenceError("storage/unavailable", `${command.type} requires an initialized engine`);
+        advanceOnlineClock();
+        if (command.type === "EquipItem") engine.equipItem(command.itemId);
+        else engine.unequipSlot(command.slot);
+        cancelPendingTerrain("equipment command invalidated execution continuation");
+        markDirty();
+        if (storage === null || committedSnapshot === null) throw new PersistenceError("storage/unavailable", `${command.type} requires a committed save`);
+        {
+          const revision = committedSnapshot.meta.current_revision + 1;
+          const receipt: CommandReceiptRecord = {
+            command_id: command.commandId, command_type: command.type, payload_sha256: payloadSha256,
+            terminal_status: "accepted", save_revision: revision, reason_code: null,
+          };
+          const generation = dirtyGeneration;
+          const core = coreFromEngine(revision, [...committedSnapshot.core.command_receipts, receipt]);
+          const worldChunks = engine.persistedState().worldChunks;
+          committedSnapshot = await persistentMutation(command, () => storage!.commit(core, worldChunks, command.wallClockMs));
+          committedDirtyGeneration = generation;
+          if (dirtyGeneration === generation) dirtySincePerformanceMs = null;
+          saveState = { state: "saved", revision, committedWallClockMs: command.wallClockMs, localOnly: true, evictionWarning: false, lastError: null };
+          engine.touchReadModel();
+        }
+        emitReadModel(true);
+        startBackgroundWork();
+        break;
       case "ResetSave":
         if (onlineTimer !== null) clearInterval(onlineTimer);
         onlineTimer = null;
@@ -870,6 +934,13 @@ async function executeCommand(command: GameplayCommand, payloadSha256: string): 
   } catch (error: unknown) {
     if (error instanceof InvalidWorldSeedError) return rejection(command.commandId, { code: "command/invalid_seed", params: null, diagnosticId: null });
     if (error instanceof UnknownTargetPrototypeError) return rejection(command.commandId, { code: "command/unknown_target_prototype", params: null, diagnosticId: null });
+    if (error instanceof SkillLevelTooLowError) return rejection(command.commandId, {
+      code: "command/skill_level_too_low",
+      params: { prototypeId: error.prototypeId, skillId: error.skillId, requiredLevel: error.requiredLevel, actualLevel: error.actualLevel },
+      diagnosticId: null,
+    });
+    if (error instanceof ItemUnavailableError) return rejection(command.commandId, { code: "command/item_unavailable", params: null, diagnosticId: null });
+    if (error instanceof InvalidEquipmentError) return rejection(command.commandId, { code: "command/invalid_equipment", params: null, diagnosticId: null });
     if (error instanceof ContentPlacementError) return rejection(command.commandId, { code: "command/content_placement_failed", params: null, diagnosticId: null });
     if (error instanceof QuantityOverflowError) {
       const id = diagnosticId("engine", "quantity-overflow");

@@ -129,6 +129,15 @@ input, select { min-width: 0; padding: 0 12px; font-variant-numeric: tabular-num
 .empty-copy { margin: 8px 0 0; color: var(--muted); font-size: 10px; }
 .compact-stat { margin-top: 8px; }
 .compact-stat strong { color: var(--ink); font-size: 14px; }
+.compact-stat small { color: rgba(244, 240, 228, .48); font-size: 9px; }
+.task-warning { grid-column: 1 / -1; margin: 0; color: #f1c17c; font-size: 10px; line-height: 1.45; }
+.group-label { display: block; margin-top: 9px; color: rgba(244, 240, 228, .48); font-size: 9px; }
+.inventory-list { display: grid; gap: 3px; }
+.inventory-list .compact-stat { margin-top: 4px; }
+.equipment-row { display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 7px; margin-top: 7px; font-size: 10px; }
+.equipment-row > span { color: var(--muted); }
+.equipment-row > strong { font-size: 11px; }
+.equipment-row button { min-height: 30px; padding-inline: 10px; font-size: 10px; }
 .resource-list { display: grid; gap: 5px; max-height: 120px; margin: 8px 0 0; padding: 0; overflow: auto; list-style: none; }
 .resource-list li { display: grid; grid-template-columns: 8px 1fr; align-items: center; gap: 8px; min-height: 30px; }
 .resource-list li > span { width: 8px; height: 8px; border-radius: 50%; background: #85d59a; }

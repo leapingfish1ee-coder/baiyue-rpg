@@ -3,6 +3,7 @@ import { Camera } from "./camera.ts";
 import { ChunkManager } from "./chunk-manager.ts";
 import { GameplayClient } from "./gameplay-client.ts";
 import type { ActivityReason, GameplayReadModelV1, WorldPoint } from "./gameplay/contracts.ts";
+import { RESOURCE_DEFINITIONS, RESOURCE_PROTOTYPE_ORDER, type ResourcePrototypeId, type ResourceTaskKind } from "./gameplay/content.ts";
 import { base64ToFogBits } from "./gameplay/fog.ts";
 import { Renderer } from "./renderer.ts";
 import { NAV_UNITS_PER_TILE, RUNTIME_CHUNK_SIZE } from "./world-contract.ts";
@@ -36,6 +37,7 @@ const radiusLabel = required<HTMLElement>("#radius-label");
 const etaLabel = required<HTMLElement>("#eta-label");
 const gatherControls = required<HTMLElement>("#gather-controls");
 const gatherUnknown = required<HTMLElement>("#gather-unknown");
+const gatherTarget = required<HTMLSelectElement>("#gather-target");
 const gatherQuantity = required<HTMLInputElement>("#gather-quantity");
 const gatherFiniteButton = required<HTMLButtonElement>("#gather-finite");
 const gatherContinuousButton = required<HTMLButtonElement>("#gather-continuous");
@@ -43,7 +45,20 @@ const gatherProgress = required<HTMLElement>("#gather-progress");
 const gatheringLevel = required<HTMLElement>("#gathering-level");
 const gatheringXp = required<HTMLElement>("#gathering-xp");
 const gatheringSpeed = required<HTMLElement>("#gathering-speed");
+const woodcuttingLevel = required<HTMLElement>("#woodcutting-level");
+const woodcuttingXp = required<HTMLElement>("#woodcutting-xp");
+const woodcuttingSpeed = required<HTMLElement>("#woodcutting-speed");
+const miningLevel = required<HTMLElement>("#mining-level");
+const miningXp = required<HTMLElement>("#mining-xp");
+const miningSpeed = required<HTMLElement>("#mining-speed");
+const taskWarning = required<HTMLElement>("#task-warning");
 const fiberQuantity = required<HTMLElement>("#fiber-quantity");
+const materialList = required<HTMLElement>("#material-list");
+const toolInventoryList = required<HTMLElement>("#tool-inventory-list");
+const axeEquipped = required<HTMLElement>("#axe-equipped");
+const pickaxeEquipped = required<HTMLElement>("#pickaxe-equipped");
+const axeToggle = required<HTMLButtonElement>("#axe-toggle");
+const pickaxeToggle = required<HTMLButtonElement>("#pickaxe-toggle");
 const resourceCount = required<HTMLElement>("#resource-count");
 const resourceList = required<HTMLUListElement>("#resource-list");
 const bottomIntent = required<HTMLElement>("#bottom-intent");
@@ -111,6 +126,7 @@ function reasonLabel(reason: ActivityReason | null): string | null {
     case "TaskCompleted": return "已抵达目的地";
     case "NoReachableTargetOrFrontier": return "附近没有可到达的未知区域";
     case "DestinationUnreachable": return "目的地不可到达";
+    case "MissingTool": return `缺少${reason.params.slot === "axe" ? "斧" : "镐"}（tier ${reason.params.minimumTier}）`;
     case "storage_write_failed": return "保存失败，探索已暂停";
     case "incompatible_save": return "存档版本不兼容";
     case "active_in_other_tab": return "世界已在另一个标签页运行";
@@ -122,10 +138,14 @@ function reasonLabel(reason: ActivityReason | null): string | null {
 function activityLabel(model: GameplayReadModelV1): string {
   switch (model.activity.state) {
     case "idle": return "空闲";
-    case "planning": return model.activity.phase === "acquiring_target" ? "索取采集节点" : model.activity.phase === "auto_exploring" ? "自动探索" : "规划路线";
+    case "planning": return model.activity.phase === "acquiring_target" ? "索取资源节点" : model.activity.phase === "auto_exploring" ? "自动探索" : "规划路线";
     case "moving": return model.activity.phase === "moving_to_target" ? "前往资源" : model.activity.phase === "auto_exploring" ? "自动探索" : "探索中";
-    case "acting": return model.activity.action === null ? "采集中" : `采集中 · ${formatDuration(model.activity.action.remainingMs)}`;
-    case "waiting": return model.task?.kind === "Gather" && model.activity.reason?.code === "TaskCompleted" ? "采集完成" : reasonLabel(model.activity.reason) ?? "等待中";
+    case "acting": return model.activity.action === null ? "资源行动" : `${RESOURCE_DEFINITIONS[model.activity.action.prototypeId].taskKind === "Woodcut" ? "伐木" : RESOURCE_DEFINITIONS[model.activity.action.prototypeId].taskKind === "Mine" ? "采矿" : "采集"} · ${formatDuration(model.activity.action.remainingMs)}`;
+    case "waiting": {
+      if (model.activity.reason?.code !== "TaskCompleted") return reasonLabel(model.activity.reason) ?? "等待中";
+      if (model.task?.kind === "Explore") return model.task.mode === "destination" ? "已抵达目的地" : "探索完成";
+      return model.task === null ? "任务完成" : `${resourceTaskLabel(model.task.kind)}完成`;
+    }
     case "paused": return "已暂停";
   }
 }
@@ -154,41 +174,111 @@ function tileOf(point: WorldPoint): Readonly<{ x: bigint; y: bigint }> {
 function phaseLabel(model: GameplayReadModelV1): string {
   const labels: Record<GameplayReadModelV1["activity"]["phase"], string> = {
     idle: "空闲", exploring: "探索", acquiring_target: "索取最近节点", moving_to_target: "前往采集点",
-    gathering: "采集行动", auto_exploring: "为采集自动探索", waiting: "待机", paused: "暂停",
+    resource_action: "资源行动", auto_exploring: "为任务自动探索", waiting: "待机", paused: "暂停",
   };
   return labels[model.activity.phase];
 }
 
+function resourceTaskLabel(kind: ResourceTaskKind): string {
+  return kind === "Gather" ? "采集" : kind === "Woodcut" ? "伐木" : "采矿";
+}
+
+function syncTaskWarning(model: GameplayReadModelV1): void {
+  const prototypeId = gatherTarget.value as ResourcePrototypeId;
+  const placement = model.map.resourcePlacements.find((candidate) => candidate.prototypeId === prototypeId);
+  const requirement = placement?.requiredTool ?? null;
+  if (requirement === null || model.equipment?.[requirement.slot] !== null) {
+    taskWarning.hidden = true;
+    taskWarning.textContent = "";
+    return;
+  }
+  taskWarning.hidden = false;
+  taskWarning.textContent = `当前未装备${requirement.slot === "axe" ? "斧" : "镐"}。任务会保留并等待工具。`;
+}
+
+function syncSkill(label: string, skill: NonNullable<GameplayReadModelV1["skills"]>["gathering"] | undefined, levelNode: HTMLElement, xpNode: HTMLElement, speedNode: HTMLElement): void {
+  if (skill === undefined) return;
+  levelNode.textContent = `${label} Lv.${skill.level}`;
+  xpNode.textContent = skill.nextLevelXp === null ? `${skill.totalXp.toLocaleString()} XP · 满级`
+    : `${skill.currentLevelXp.toLocaleString()} / ${skill.nextLevelXp.toLocaleString()} XP`;
+  speedNode.textContent = `${skill.skillSpeedBps} bps`;
+}
+
+function inventoryRows(items: NonNullable<GameplayReadModelV1["inventory"]>["items"], empty: string): readonly HTMLElement[] {
+  if (items.length === 0) {
+    const node = document.createElement("span");
+    node.className = "empty-copy";
+    node.textContent = empty;
+    return [node];
+  }
+  return items.map((entry) => {
+    const row = document.createElement("div");
+    row.className = "compact-stat";
+    const name = document.createElement("span");
+    name.textContent = entry.displayName;
+    const quantity = document.createElement("strong");
+    quantity.textContent = String(entry.quantity);
+    row.append(name, quantity);
+    return row;
+  });
+}
+
 function syncGatheringUi(model: GameplayReadModelV1): void {
-  const known = model.knownTargetPrototypeIds.includes("wild_fiber");
+  const previousTarget = gatherTarget.value;
+  const summaries = new Map(model.map.resourcePlacements.map((placement) => [placement.prototypeId, placement]));
+  const options = RESOURCE_PROTOTYPE_ORDER.filter((prototypeId) => model.knownTargetPrototypeIds.includes(prototypeId)).map((prototypeId) => {
+    const definition = RESOURCE_DEFINITIONS[prototypeId];
+    const summary = summaries.get(prototypeId);
+    const option = document.createElement("option");
+    option.value = prototypeId;
+    option.disabled = summary?.locked ?? false;
+    option.textContent = `${resourceTaskLabel(definition.taskKind)} · ${definition.displayName}${summary?.locked ? `（需${definition.skillId === "mining" ? "采矿" : definition.skillId === "woodcutting" ? "伐木" : "采集"} ${definition.requiredLevel}）` : ""}`;
+    return option;
+  });
+  gatherTarget.replaceChildren(...options);
+  if (options.some((option) => option.value === previousTarget && !option.disabled)) gatherTarget.value = previousTarget;
+  const known = options.length > 0;
   gatherControls.hidden = !known;
   gatherUnknown.hidden = known;
+  if (known) updateResourceButtons();
   const task = model.task;
-  gatherProgress.textContent = task?.kind === "Gather"
+  const isResourceTask = task !== null && task.kind !== "Explore";
+  gatherProgress.textContent = isResourceTask
     ? task.quantity === null ? `${task.completedQuantity} · 持续` : `${task.completedQuantity} / ${task.quantity}`
     : "未设置";
 
-  const skill = model.skills?.gathering;
-  if (skill !== undefined) {
-    gatheringLevel.textContent = `采集 Lv.${skill.level}`;
-    gatheringXp.textContent = skill.nextLevelXp === null
-      ? `${skill.totalXp.toLocaleString()} XP · 满级`
-      : `${skill.currentLevelXp.toLocaleString()} / ${skill.nextLevelXp.toLocaleString()} XP`;
-    gatheringSpeed.textContent = `${skill.skillSpeedBps} bps`;
-  }
+  syncSkill("采集", model.skills?.gathering, gatheringLevel, gatheringXp, gatheringSpeed);
+  syncSkill("伐木", model.skills?.woodcutting, woodcuttingLevel, woodcuttingXp, woodcuttingSpeed);
+  syncSkill("采矿", model.skills?.mining, miningLevel, miningXp, miningSpeed);
   fiberQuantity.textContent = String(model.inventory?.items.find((item) => item.itemId === "fiber")?.quantity ?? 0);
+  const inventoryItems = model.inventory?.items ?? [];
+  materialList.replaceChildren(...inventoryRows(inventoryItems.filter((item) => item.category === "material"), "暂无材料"));
+  toolInventoryList.replaceChildren(...inventoryRows(inventoryItems.filter((item) => item.category === "equipment"), "工具均已装备"));
+  const axe = model.equipment?.axe ?? null;
+  const pickaxe = model.equipment?.pickaxe ?? null;
+  axeEquipped.textContent = axe?.displayName ?? "未装备";
+  pickaxeEquipped.textContent = pickaxe?.displayName ?? "未装备";
+  axeToggle.textContent = axe === null ? "装备" : "卸下";
+  pickaxeToggle.textContent = pickaxe === null ? "装备" : "卸下";
 
   resourceCount.textContent = String(model.map.resourcePlacements.length);
   resourceList.replaceChildren(...model.map.resourcePlacements.map((placement) => {
     const item = document.createElement("li");
-    const state = placement.state === "active" ? "可采集" : placement.state === "depleted" ? "已耗尽" : `重生 ${formatDuration(placement.respawnRemainingMs ?? "0")}`;
+    const state = placement.locked ? `需${placement.skillId === "mining" ? "采矿" : placement.skillId === "woodcutting" ? "伐木" : "采集"} ${placement.requiredLevel}`
+      : placement.state === "active" ? "可执行" : placement.state === "depleted" ? "已耗尽" : `重生 ${formatDuration(placement.respawnRemainingMs ?? "0")}`;
     item.dataset.state = placement.state;
-    item.innerHTML = `<span aria-hidden="true"></span><div><strong>${placement.displayName}</strong><small>${state}</small></div>`;
+    const dot = document.createElement("span");
+    dot.style.background = placement.mapColor;
+    const body = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = placement.displayName;
+    const status = document.createElement("small"); status.textContent = state;
+    body.append(name, status); item.append(dot, body);
     return item;
   }));
+  syncTaskWarning(model);
 
-  bottomIntent.textContent = task === null ? "无任务" : task.kind === "Gather"
-    ? `采集野生纤维 · ${task.quantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.quantity}`}`
+  bottomIntent.textContent = task === null ? "无任务" : task.kind !== "Explore"
+    ? `${resourceTaskLabel(task.kind)}${RESOURCE_DEFINITIONS[task.targetPrototypeId].displayName} · ${task.quantity === null ? `${task.completedQuantity} / 持续` : `${task.completedQuantity} / ${task.quantity}`}`
     : task.mode === "continuous" ? "持续探索" : "目的地探索";
   bottomPhase.textContent = phaseLabel(model);
   bottomRemaining.textContent = model.activity.action !== null
@@ -264,7 +354,9 @@ function syncProductUi(model: GameplayReadModelV1): void {
     } else {
       offlineTitle.textContent = `旅程继续了 ${formatDuration(model.offlineReport.creditedDurationMs)}`;
       const discarded = BigInt(model.offlineReport.discardedDurationMs);
-      offlineSummary.textContent = `探索 XP +${model.offlineReport.xpGained}，采集 XP +${model.offlineReport.gatheringXpGained}，纤维 +${model.offlineReport.fiberGained}，揭露 ${model.offlineReport.revealedTiles} 格。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
+      const skillGains = model.offlineReport.skillXpGains.map((gain) => `${gain.displayName} XP +${gain.xp}`).join("，");
+      const itemGains = model.offlineReport.itemGains.map((gain) => `${gain.displayName} +${gain.quantity}`).join("，");
+      offlineSummary.textContent = `${[skillGains, itemGains, `揭露 ${model.offlineReport.revealedTiles} 格`].filter(Boolean).join("，")}。${discarded > 0n ? `超过 168 小时的 ${formatDuration(discarded.toString())} 未计入。` : ""}`;
     }
   }
 }
@@ -273,7 +365,7 @@ client.subscribe(syncProductUi);
 
 function setBusy(busy: boolean): void {
   commandBusy = busy;
-  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
+  for (const button of [createButton, continuousButton, destinationModeButton, gatherFiniteButton, gatherContinuousButton, axeToggle, pickaxeToggle, cancelButton, destinationConfirm, exportButton, importButton, resetButton]) {
     button.disabled = busy;
   }
 }
@@ -313,35 +405,71 @@ function requestedGatherQuantity(): number | null {
   const text = gatherQuantity.value.trim();
   if (text === "") return null;
   const quantity = Number(text);
-  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new RangeError("采集数量必须是正安全整数");
+  if (!Number.isSafeInteger(quantity) || quantity <= 0) throw new RangeError("任务数量必须是正安全整数");
   return quantity;
 }
 
-gatherQuantity.addEventListener("input", () => {
+function updateResourceButtons(): void {
+  const prototypeId = gatherTarget.value as ResourcePrototypeId;
+  const definition = RESOURCE_DEFINITIONS[prototypeId];
+  const label = resourceTaskLabel(definition.taskKind);
   const text = gatherQuantity.value.trim();
-  gatherFiniteButton.textContent = /^\d+$/.test(text) ? `采集 ×${text}` : "设置采集";
+  gatherFiniteButton.textContent = /^\d+$/.test(text) ? `${label} ×${text}` : `设置${label}`;
+  gatherContinuousButton.textContent = `持续${label}`;
+  if (readModel !== null) syncTaskWarning(readModel);
+}
+
+function setSelectedResourceTask(quantity: number | null) {
+  const prototypeId = gatherTarget.value as ResourcePrototypeId;
+  switch (prototypeId) {
+    case "wild_fiber": return client.command({ type: "SetTask", task: { kind: "Gather", targetPrototypeId: prototypeId, quantity } });
+    case "softwood_tree": return client.command({ type: "SetTask", task: { kind: "Woodcut", targetPrototypeId: prototypeId, quantity } });
+    case "surface_stone":
+    case "shallow_copper_deposit": return client.command({ type: "SetTask", task: { kind: "Mine", targetPrototypeId: prototypeId, quantity } });
+  }
+}
+
+gatherQuantity.addEventListener("input", () => {
+  updateResourceButtons();
 });
+gatherTarget.addEventListener("change", updateResourceButtons);
 
 gatherFiniteButton.addEventListener("click", () => {
   let quantity: number;
   try {
     const requested = requestedGatherQuantity();
-    if (requested === null) throw new RangeError("请输入采集数量，或选择持续采集");
+    if (requested === null) throw new RangeError("请输入任务数量，或选择持续执行");
     quantity = requested;
   } catch (error: unknown) {
-    showToast(error instanceof Error ? error.message : "采集数量无效", true);
+    showToast(error instanceof Error ? error.message : "任务数量无效", true);
     return;
   }
   void runCommand(
-    () => client.command({ type: "SetTask", task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity } }),
-    `已设置采集 ×${quantity}`,
+    () => setSelectedResourceTask(quantity),
+    `已设置${resourceTaskLabel(RESOURCE_DEFINITIONS[gatherTarget.value as ResourcePrototypeId].taskKind)} ×${quantity}`,
   );
 });
 
 gatherContinuousButton.addEventListener("click", () => {
   void runCommand(
-    () => client.command({ type: "SetTask", task: { kind: "Gather", targetPrototypeId: "wild_fiber", quantity: null } }),
-    "已开始持续采集",
+    () => setSelectedResourceTask(null),
+    `已开始持续${resourceTaskLabel(RESOURCE_DEFINITIONS[gatherTarget.value as ResourcePrototypeId].taskKind)}`,
+  );
+});
+
+axeToggle.addEventListener("click", () => {
+  const equipped = readModel?.equipment?.axe ?? null;
+  void runCommand(
+    () => equipped === null ? client.command({ type: "EquipItem", itemId: "worn_axe" }) : client.command({ type: "UnequipSlot", slot: "axe" }),
+    equipped === null ? "已装备破旧斧" : "已卸下破旧斧",
+  );
+});
+
+pickaxeToggle.addEventListener("click", () => {
+  const equipped = readModel?.equipment?.pickaxe ?? null;
+  void runCommand(
+    () => equipped === null ? client.command({ type: "EquipItem", itemId: "worn_pickaxe" }) : client.command({ type: "UnequipSlot", slot: "pickaxe" }),
+    equipped === null ? "已装备破旧镐" : "已卸下破旧镐",
   );
 });
 

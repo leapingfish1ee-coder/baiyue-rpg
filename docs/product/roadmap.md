@@ -19,7 +19,7 @@
 
 目标：交付第一个真实可运行的端到端 gameplay 闭环，而不是只建立水平模块。
 
-设计状态：**Ready for implementation**。这表示产品与系统设计已经封板，不表示代码已经实现，也不免除 fixtures、benchmark 和专项 contract 验收。
+实现状态：**Implemented**。当前能力与限制见[当前状态](current-state.md)，运行时边界见[阶段 1 运行时契约](../specifications/phase-1-runtime-contracts.md)。
 
 - 创建本地世界，并以独立 gameplay worker 运行唯一权威 gameplay state 与 world time。
 - 实现 Explore `TaskIntent`、Accepted 自由向量导航、永久迷雾、`Exploration XP` 和跨 chunk 自动探索。
@@ -37,7 +37,7 @@
 
 ### 阶段 2A：基础采集垂直切片
 
-设计状态：**Ready for implementation**。设计与参数已经封板，不表示代码已经实现。
+实现状态：**Implemented**。当前能力与限制见[当前状态](current-state.md)，运行时增量见[阶段 2A 运行时契约](../specifications/phase-2a-runtime-contracts.md)。
 
 目标：先用一个资源类型证明开放世界内容 placement、采集任务、行动结算、无容量库存、技能 XP 和 offline/reload 已形成真实闭环。
 
@@ -52,7 +52,7 @@
 
 ### 阶段 2B：伐木与采矿
 
-状态：**Planned**。尚无实施包，也不表示已实现。
+实现状态：**Implemented**。当前能力与限制见[当前状态](current-state.md)，运行时增量见[阶段 2B 运行时契约](../specifications/phase-2b-runtime-contracts.md)。
 
 目标：在 2A 已验证的 resource placement、target acquisition、action settlement 和库存边界上增加工具型资源行动。
 
@@ -62,7 +62,7 @@
 - 验证缺少工具的稳定等待、工具速度来源和不同资源重生。
 - 不加入生产配方、工作站、敌人、战斗或叙事。
 
-阶段 2A 完成验收后再起草阶段 2B 实施包，不在 2A 代码中预留空模块。
+阶段 2B 按“显式任务类别 + 共享资源执行器”分层实现。先打通软木树与斧，再在同一执行器加入地表石、镐和边界浅层铜矿；不预建阶段 2C 模块。
 
 ### 阶段 2C：生产与装备
 
@@ -76,7 +76,7 @@
 - 保持缺料等待，不自动采集、购买或切换任务。
 - 不加入敌人、战斗、狩猎或叙事。
 
-阶段 2B 完成验收后再起草阶段 2C 实施包，不提前建立配方或装备兼容层。
+阶段 2C 仍需单独起草并接受实施包；阶段 2B 未提前建立配方或装备兼容层。
 
 阶段 2 各子阶段继续服从[技能成长](../requirements/skill-progression.md)、[自动任务](../requirements/automation-tasks.md)、[探索与目标索取](../requirements/exploration.md)、[物品与装备系统](../requirements/item-equipment.md)和[玩法 UI](../requirements/gameplay-ui.md)。
 
